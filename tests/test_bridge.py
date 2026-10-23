@@ -239,3 +239,15 @@ def test_extensions_are_stable(tmp_path):
     again = State(tmp_path / "s.json")
     assert again.gateway_id == s.gateway_id
     assert again.extension_for("b", 801) == "802" and again.kiosk_for("801") == "a"
+
+
+async def test_helper_and_targetless_channels_are_ignored(rig):
+    for cid, name in (("s1", "Snoop/ext-1-0001"), ("u1", "UnicastRTP/127.0.0.1:1-1")):
+        ch = {"id": cid, "name": name}
+        rig.fake_ari.channels[cid] = ch
+        await rig.fake_ari.events.put({"type": "StasisStart", "channel": ch, "args": []})
+    ch = {"id": "p1", "name": "PJSIP/101-0002", "caller": {"name": "x", "number": "101"}}
+    rig.fake_ari.channels["p1"] = ch
+    await rig.fake_ari.events.put({"type": "StasisStart", "channel": ch, "args": []})
+    await asyncio.sleep(0.3)
+    assert not rig.kiosk.calls and not any(m == "DELETE" for m, _, _ in rig.fake_ari.requests)

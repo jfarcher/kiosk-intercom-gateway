@@ -49,6 +49,8 @@ HANGUP_CAUSE = {
     "unavailable": "congestion",
     "failed": "congestion",
 }
+# Channels ARI creates for media work, never callers.
+HELPER_CHANNELS = ("UnicastRTP/", "Snoop/", "Announcer/", "Recorder/", "WebSocket/")
 # What the kiosk says about a call → why it ended.
 SIGNAL_REASON = {"decline": "declined", "missed": "no_answer", "cancel": "ended", "hangup": "ended"}
 TALK_LEVEL = 400.0  # RMS of 16-bit samples above which the SIP side counts as talking
@@ -255,10 +257,16 @@ class CallManager:
         channel = event.get("channel") or {}
         cid = str(channel.get("id") or "")
         if kind == "StasisStart":
-            if cid in self.ext_channels or str(channel.get("name", "")).startswith("UnicastRTP/"):
-                return
+            name = str(channel.get("name", ""))
+            if cid in self.ext_channels or name.startswith(HELPER_CHANNELS):
+                return  # our own media channels, snoops and the like
             args = event.get("args") or []
-            target = str(args[0]) if args else str((channel.get("dialplan") or {}).get("exten") or "")
+            if not args:
+                # Only the dialplan's Stasis(app,<target>) brings callers here;
+                # channels created over ARI by anyone else carry no target.
+                _LOG.debug("ignoring %s: entered %s without a target", name, self.ari and self.ari.app)
+                return
+            target = str(args[0])
             asyncio.ensure_future(self.place(cid, target, caller_label(channel)))
         elif kind in ("StasisEnd", "ChannelDestroyed"):
             c = self.by_channel.get(cid)

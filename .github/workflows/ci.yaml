@@ -65,14 +65,16 @@ jobs:
         run: python3 tests/integration/e2e.py http://127.0.0.1:8088 kig ci-secret
       - name: Check what Asterisk heard from the kiosk
         run: |
-          echo "::notice title=recordings::$(docker exec ast sh -c 'ls -la /tmp/*.wav /tmp/kig* 2>&1' | tr '\n' ' ')"
+          echo "::notice title=recordings::$(docker exec ast sh -c 'ls -la /tmp/kig* /var/spool/asterisk/recording/ 2>&1' | tr '\n' ' ')"
+          docker cp ast:/var/spool/asterisk/recording/kig-snoop.wav kig-snoop.wav || true
           docker cp ast:/tmp/kig-ci.wav kig-ci.wav
-          python3 tests/integration/e2e.py --recording kig-ci.wav
+          # The snoop is the gateway's RTP as Asterisk received it; the second is the far side's Record().
+          python3 tests/integration/e2e.py --recording kig-snoop.wav kig-ci.wav
       - name: Asterisk log
         if: always()
         run: |
           docker logs ast 2>&1 | tail -80
-          # Warnings and errors as annotations (the raw log is not always reachable).
-          docker logs ast 2>&1 | grep -E "WARNING|ERROR" | tail -8 | while read -r line; do
-            echo "::warning title=asterisk::${line}"
-          done
+          lines=$(docker logs ast 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+            | grep -E "WARNING|ERROR|Record|RECORD|kig|UnicastRTP|strict" \
+            | grep -v -E "declined to load|LDAP|phoneprov|getnameinfo|users.conf|non-required" | tail -25)
+          echo "::notice title=asterisk log::$(echo "$lines" | sed ':a;N;$!ba;s/\n/%0A/g')"

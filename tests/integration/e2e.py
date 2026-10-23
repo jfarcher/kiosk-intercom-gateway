@@ -48,18 +48,30 @@ def level(samples: list[int]) -> float:
     return math.sqrt(sum(x * x for x in samples) / max(1, len(samples)))
 
 
+REPORT: list[str] = []
+
+
+def flush_report() -> None:
+    """All of it as one annotation: GitHub keeps only ten notices per step,
+    and annotations are readable where the raw log is not."""
+    if os.environ.get("GITHUB_ACTIONS") and REPORT:
+        print("::notice title=e2e report::" + "%0A".join(REPORT), flush=True)
+    REPORT.clear()
+
+
 def note(text: str) -> None:
-    """Printed, and an annotation on GitHub Actions (readable without the logs)."""
     print(text, flush=True)
-    if os.environ.get("GITHUB_ACTIONS"):
-        print(f"::notice title=e2e::{text}", flush=True)
+    REPORT.append(text)
 
 
 def check(ok: bool, what: str) -> None:
-    print(("PASS " if ok else "FAIL ") + what, flush=True)
-    if os.environ.get("GITHUB_ACTIONS"):
-        print(f"::{'notice' if ok else 'error'} title=e2e::{'PASS' if ok else 'FAIL'} {what}", flush=True)
+    line = ("PASS " if ok else "FAIL ") + what
+    print(line, flush=True)
+    REPORT.append(line)
     if not ok:
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=e2e::{line}", flush=True)
+        flush_report()
         raise SystemExit(1)
 
 
@@ -97,12 +109,23 @@ async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, l
         await kiosk.talk(tone(1000, pos, FRAME_BYTES // 2))
         pos += FRAME_BYTES // 2
         await asyncio.sleep(0.08)
+        if i == 5 and call.ext_channel and context == "kig-ci-rec":
+            # Record what Asterisk receives from the gateway, straight off the
+            # external media channel, independent of the far side's Record().
+            async with s.post(f"{url}/ari/channels/{call.ext_channel}/snoop",
+                              params={"spy": "in", "app": "kiosk-intercom"}) as r:
+                snoop = await r.json() if r.status == 200 else None
+                note(f"{label}: snoop HTTP {r.status}")
+            if snoop:
+                async with s.post(f"{url}/ari/channels/{snoop['id']}/record",
+                                  params={"name": "kig-snoop", "format": "wav", "maxDurationSeconds": 4,
+                                          "ifExists": "overwrite"}) as r:
+                    note(f"{label}: snoop recording HTTP {r.status} {(await r.text())[:120]}")
         if i == 40 and call.ext_channel:  # ~3 s in: what Asterisk saw from us
             async with s.get(f"{url}/ari/channels/{call.ext_channel}/rtp_statistics") as r:
-                stats = await r.json() if r.status == 200 else {"http": r.status}
+                stats = await r.json() if r.status == 200 else {"http": r.status, "body": await r.text()}
     if stats is not None:
-        keys = ("txcount", "rxcount", "rxploss", "local_ssrc", "remote_ssrc")
-        note(f"{label}: Asterisk RTP stats " + json.dumps({k: stats.get(k) for k in keys}))
+        note(f"{label}: Asterisk RTP stats " + json.dumps(stats)[:300])
     if call.rtp:
         note(f"{label}: gateway RTP sent {call.rtp.sent}, received {call.rtp.received}, "
              f"remote {call.rtp.remote}, payload type {call.rtp.payload_type}")
@@ -145,6 +168,7 @@ async def main(url: str, user: str, password: str) -> None:
     async with aiohttp.ClientSession(auth=aiohttp.BasicAuth(user, password)) as s:
         await one_call(s, url, kiosk, calls, "kig-ci-tone", "call 1 (phone → kiosk)")
         await one_call(s, url, kiosk, calls, "kig-ci-rec", "call 2 (kiosk → phone)")
+    flush_report()
 
     stop.set()
     await runner
@@ -163,11 +187,18 @@ def analyse_recording(path: str) -> None:
     tail = samples[len(samples) // 3:]  # skip set-up
     f, rms = frequency(tail, rate), level(tail)
     note(f"Asterisk recorded {len(samples) / rate:.1f} s at {rate} Hz: {f:.0f} Hz, RMS {rms:.0f}")
-    check(900 <= f <= 1100 and rms > 300, "Asterisk hears the kiosk's 1000 Hz tone")
+    ok = 900 <= f <= 1100 and rms > 300
+    check(ok, f"{path}: Asterisk hears the kiosk's 1000 Hz tone")
+    flush_report()
 
 
 if __name__ == "__main__":
     if sys.argv[1] == "--recording":
-        analyse_recording(sys.argv[2])
+        for path in sys.argv[2:]:
+            try:
+                analyse_recording(path)
+            except SystemExit:
+                if path == sys.argv[-1]:
+                    raise
     else:
         asyncio.run(main(*sys.argv[1:4]))
