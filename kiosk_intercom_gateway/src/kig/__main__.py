@@ -10,12 +10,13 @@ from aiohttp import web
 
 from . import __version__, config
 from .discovery import Discovery
-from .ha import HomeAssistant
+from .ha import HomeAssistant, supervisor_ingress_port
 from .probe import HttpProber
 from .roster import Roster
 from .web import make_app
 
 _LOG = logging.getLogger("kig")
+DEFAULT_WEB_PORT = 8099  # outside the Supervisor
 
 
 async def main() -> None:
@@ -56,10 +57,26 @@ async def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
+    port = cfg.web_port
+    if not port:
+        try:
+            port = await supervisor_ingress_port() or DEFAULT_WEB_PORT
+        except Exception as err:
+            _LOG.error("could not read the ingress port from the Supervisor: %s", err)
+            raise SystemExit(1) from err
     runner = web.AppRunner(make_app(roster, info, cfg.ingress_only), access_log=None)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", cfg.web_port).start()
-    _LOG.info("status page on port %d", cfg.web_port)
+    try:
+        await web.TCPSite(runner, "0.0.0.0", port).start()
+    except OSError as err:
+        _LOG.error("status page cannot listen on port %d: %s (another service on the host holds it)",
+                   port, err.strerror or err)
+        if discovery:
+            await discovery.stop()
+        await runner.cleanup()
+        await prober.close()
+        raise SystemExit(1) from err
+    _LOG.info("status page on port %d", port)
 
     try:
         await asyncio.gather(roster.run(stop), ha.run(stop))

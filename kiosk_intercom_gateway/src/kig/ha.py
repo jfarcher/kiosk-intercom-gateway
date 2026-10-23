@@ -27,6 +27,21 @@ CORE_WS = "ws://supervisor/core/websocket"
 SUMMARY_ENTITY = "sensor.kiosk_intercom_gateway_kiosks"
 
 
+async def supervisor_ingress_port(
+    token: str | None = None, url: str = "http://supervisor/addons/self/info"
+) -> int | None:
+    """The host port the Supervisor assigned this app for ingress
+    (``ingress_port: 0``), or None outside the Supervisor."""
+    token = token or os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        return None
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+        async with s.get(url, headers={"Authorization": f"Bearer {token}"}) as r:
+            r.raise_for_status()
+            port = (await r.json())["data"]["ingress_port"]
+    return int(port) if port else None
+
+
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 

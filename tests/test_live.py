@@ -79,3 +79,21 @@ async def test_status_page_refuses_non_ingress_peers():
     app = make_app(Roster(never), lambda: {}, ingress_only=True)
     async with TestClient(TestServer(app, host="127.0.0.1")) as client:
         assert (await client.get("/")).status == 200  # loopback is allowed
+
+
+async def test_supervisor_ingress_port():
+    from kig.ha import supervisor_ingress_port
+
+    async def info(request):
+        assert request.headers["Authorization"] == "Bearer tok"
+        return web.json_response({"result": "ok", "data": {"ingress_port": 63341}})
+
+    app = web.Application()
+    app.router.add_get("/addons/self/info", info)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        url = f"http://127.0.0.1:{server.port}/addons/self/info"
+        assert await supervisor_ingress_port("tok", url) == 63341
+    finally:
+        await server.close()

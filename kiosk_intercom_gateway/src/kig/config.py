@@ -17,7 +17,7 @@ class Config:
     probe_interval: int = 30
     mdns: bool = True
     log_level: str = "info"
-    web_port: int = 8099
+    web_port: int = 0  # 0: ask the Supervisor, else 8099
     ingress_only: bool = True
 
 
@@ -31,7 +31,7 @@ def load(path: Path = OPTIONS) -> Config:
         probe_interval=int(raw.get("probe_interval", 30)),
         mdns=bool(raw.get("mdns", True)),
         log_level=str(raw.get("log_level", os.environ.get("KIG_LOG", "info"))),
-        web_port=int(os.environ.get("KIG_PORT", 8099)),
+        web_port=int(os.environ.get("KIG_PORT", 0)),
         # Outside the Supervisor (local runs) the page is open to localhost only anyway.
         ingress_only=os.environ.get("KIG_OPEN_WEB") != "1",
     )
