@@ -12,12 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from typing import Any
 
 import aiohttp
 
+from .config import supervisor_token
 from .roster import Roster
 
 _LOG = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ async def supervisor_ingress_port(
 ) -> int | None:
     """The host port the Supervisor assigned this app for ingress
     (``ingress_port: 0``), or None outside the Supervisor."""
-    token = token or os.environ.get("SUPERVISOR_TOKEN", "")
+    token = token or supervisor_token()
     if not token:
         return None
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
@@ -86,7 +86,7 @@ def match(kiosk_names: list[str], devices: list[dict[str, Any]]) -> dict[str, An
 class HomeAssistant:
     def __init__(self, roster: Roster, token: str | None = None) -> None:
         self.roster = roster
-        self.token = token or os.environ.get("SUPERVISOR_TOKEN", "")
+        self.token = token or supervisor_token()
         self._session: aiohttp.ClientSession | None = None
         self._devices: list[dict[str, Any]] = []
         self._dirty = asyncio.Event()

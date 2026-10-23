@@ -97,3 +97,15 @@ async def test_supervisor_ingress_port():
         assert await supervisor_ingress_port("tok", url) == 63341
     finally:
         await server.close()
+
+
+def test_supervisor_token_falls_back_to_s6_copy(tmp_path, monkeypatch):
+    from kig import config
+
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    monkeypatch.setattr(config, "S6_ENV", tmp_path)
+    assert config.supervisor_token() == ""
+    (tmp_path / "SUPERVISOR_TOKEN").write_text("abc\n")
+    assert config.supervisor_token() == "abc"
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "env")
+    assert config.supervisor_token() == "env"

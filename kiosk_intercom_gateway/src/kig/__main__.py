@@ -58,12 +58,20 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop.set)
 
     port = cfg.web_port
-    if not port:
+    if not port and config.under_supervisor():
         try:
-            port = await supervisor_ingress_port() or DEFAULT_WEB_PORT
+            port = await supervisor_ingress_port()
         except Exception as err:
+            port = None
             _LOG.error("could not read the ingress port from the Supervisor: %s", err)
-            raise SystemExit(1) from err
+        if not port:
+            _LOG.error("no ingress port from the Supervisor (token %s); not guessing one",
+                       "present" if config.supervisor_token() else "missing")
+            if discovery:
+                await discovery.stop()
+            await prober.close()
+            raise SystemExit(1)
+    port = port or DEFAULT_WEB_PORT
     runner = web.AppRunner(make_app(roster, info, cfg.ingress_only), access_log=None)
     await runner.setup()
     try:

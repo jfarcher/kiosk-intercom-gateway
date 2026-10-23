@@ -28,10 +28,14 @@ jobs:
           docker build
           --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
           -t kiosk-intercom-gateway:test kiosk_intercom_gateway
-      - name: Smoke test the image
+      - name: Smoke test the image (default CMD, as the Supervisor runs it)
         run: |
-          docker run -d --name kig -e KIG_KEY=test -e KIG_OPEN_WEB=1 -p 8099:8099 \
-            --entrypoint python3 kiosk-intercom-gateway:test -m kig
+          # The token must survive s6-overlay's environment reset, or the app
+          # would run without Home Assistant and on a fallback port.
+          docker run -d --name kig -e SUPERVISOR_TOKEN=ci-token -e KIG_PORT=8099 \
+            -e KIG_KEY=test -e KIG_OPEN_WEB=1 -p 8099:8099 kiosk-intercom-gateway:test
           for i in $(seq 1 20); do curl -fs localhost:8099/api/kiosks && break; sleep 1; done
           curl -fs localhost:8099/api/kiosks | grep -q '"version"'
-          docker logs kig
+          docker logs kig 2>&1 | tee kig.log
+          grep -q "status page on port 8099" kig.log
+          ! grep -q "no Supervisor token" kig.log

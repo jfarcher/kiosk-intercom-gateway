@@ -10,4 +10,6 @@ COPY src/kig /app/kig
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python3", "-m", "kig"]
+# s6-overlay resets the environment of the CMD; with-contenv restores the
+# container's, which carries SUPERVISOR_TOKEN.
+CMD ["/command/with-contenv", "python3", "-m", "kig"]

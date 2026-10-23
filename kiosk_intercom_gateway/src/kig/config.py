@@ -8,6 +8,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 OPTIONS = Path(os.environ.get("KIG_OPTIONS", "/data/options.json"))
+S6_ENV = Path("/run/s6/container_environment")
+
+
+def supervisor_token() -> str:
+    """The Supervisor's API token. s6-overlay resets the environment of the
+    main process, so fall back to the copy s6 keeps of the container's."""
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        try:
+            token = (S6_ENV / "SUPERVISOR_TOKEN").read_text()
+        except OSError:
+            token = ""
+    return token.strip()
+
+
+def under_supervisor() -> bool:
+    return bool(supervisor_token()) or Path("/data/options.json").is_file()
 
 
 @dataclass

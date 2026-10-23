@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- Fix 0.1.1 still starting on port 8099. s6-overlay hid the Supervisor's token
+  from the app, so it could not ask for its ingress port and also ran with the
+  Home Assistant integration off. The app now starts through `with-contenv`, also
+  reads s6's copy of the token, and stops with a clear error instead of guessing
+  a port when it runs under the Supervisor.
+
 ## 0.1.1
 
 - Fix "address in use" on port 8099 at start. The status page now listens on a free
