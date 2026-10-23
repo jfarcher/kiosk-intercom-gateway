@@ -1,7 +1,7 @@
 name: Kiosk Intercom Gateway
-version: "0.1.3"
+version: "0.2.0"
 slug: kiosk_intercom_gateway
-description: Tracks Kiosk Satellite intercom kiosks, groundwork for a SIP gateway
+description: Call Kiosk Satellite kiosks from SIP phones through Asterisk
 url: https://github.com/jfarcher/kiosk-intercom-gateway
 arch:
   - aarch64
@@ -24,6 +24,11 @@ options:
   extra_kiosks: []
   mdns: true
   probe_interval: 30
+  ari_url: http://127.0.0.1:8088
+  ari_username: ""
+  ari_password: ""
+  extension_start: 801
+  ring_timeout: 60
   log_level: info
 schema:
   intercom_key: password?
@@ -31,4 +36,12 @@ schema:
     - str
   mdns: bool
   probe_interval: int(10,600)
+  ari_url: url
+  ari_username: str?
+  ari_password: password?
+  ari_app: str?
+  extension_start: int(100,99999)
+  ring_timeout: int(10,300)
+  intercom_port: int(0,65535)?
+  media_host: str?
   log_level: list(debug|info|warning|error)

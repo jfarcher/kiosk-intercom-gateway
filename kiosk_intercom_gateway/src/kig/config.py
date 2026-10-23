@@ -43,6 +43,7 @@ class Config:
     extension_start: int = 801
     ring_timeout: int = 60
     intercom_port: int = 0  # 0: any free port (kiosks learn it with each call)
+    media_host: str = "127.0.0.1"  # where Asterisk connects for call audio
     ingress_only: bool = True
 
 
@@ -70,6 +71,7 @@ def load(path: Path = OPTIONS) -> Config:
         extension_start=int(raw.get("extension_start") or 801),
         ring_timeout=int(raw.get("ring_timeout") or 60),
         intercom_port=int(raw.get("intercom_port") or 0),
+        media_host=str(raw.get("media_host") or "127.0.0.1").strip(),
         # Outside the Supervisor (local runs) the page is open to localhost only anyway.
         ingress_only=os.environ.get("KIG_OPEN_WEB") != "1",
     )

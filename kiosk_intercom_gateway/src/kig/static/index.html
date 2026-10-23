@@ -50,12 +50,30 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .msg { margin-top: 8px; font-size: 13px; min-height: 1em; }
   .msg.ok { color: var(--ok); } .msg.err { color: var(--bad); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 12px 14px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .card .line { color: var(--muted); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--idle); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+  .steps { margin: 8px 0 0; padding-left: 20px; }
+  .steps li { margin: 0 0 12px; }
+  .steps code, .k code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .snip { position: relative; margin-top: 6px; }
+  .snip pre { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+              padding: 10px 12px; overflow-x: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .snip button { position: absolute; top: 6px; right: 6px; font-size: 12px; padding: 2px 8px; background: var(--card); }
+  .ext { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--accent); margin-right: 8px; }
+  .calls { margin-top: 8px; display: grid; gap: 4px; font-size: 14px; }
+  .calls .live { color: var(--ok); font-weight: 600; }
 </style>
 </head>
 <body>
 <main>
   <h1>Kiosk Intercom Gateway</h1>
-  <p class="sub">Kiosk Satellite kiosks found on the network and whether the gateway can call them.</p>
+  <p class="sub">Kiosk Satellite kiosks on the network, their extensions, and calls from SIP phones through Asterisk.</p>
   <div class="bar" id="bar">Loading…</div>
   <div class="keycard" id="keycard" hidden>
     <h2 id="keytitle">Intercom key</h2>
@@ -70,6 +88,7 @@
     </form>
     <div class="msg" id="keymsg"></div>
   </div>
+  <div class="card" id="asterisk">Loading…</div>
   <div class="list" id="list"></div>
 </main>
 <script>
@@ -111,6 +130,61 @@ $("keyform").onsubmit = async (e) => {
   }
 };
 
+const snippets = {};
+function snip(id, text) {
+  snippets[id] = text;
+  return `<div class="snip"><pre>${esc(text)}</pre><button type="button" data-copy="${id}">Copy</button></div>`;
+}
+document.addEventListener("click", async (e) => {
+  const id = e.target?.dataset?.copy;
+  if (!id) return;
+  try { await navigator.clipboard.writeText(snippets[id]); e.target.textContent = "Copied"; }
+  catch { const r = document.createRange(); r.selectNodeContents(e.target.previousElementSibling);
+          const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); e.target.textContent = "Selected"; }
+  setTimeout(() => { e.target.textContent = "Copy"; }, 1500);
+});
+const pattern = (start) => { const t = String(start || 801); return "_" + t[0] + "X".repeat(t.length - 1); };
+const since = (t) => { const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const ENDED = {ended: "ended", declined: "declined", busy: "kiosk busy", dnd: "do not disturb",
+  no_answer: "no answer", unknown_kiosk: "no kiosk on that number", unavailable: "kiosk unavailable",
+  failed: "connection failed"};
+let setupOpen = null;
+
+function renderAsterisk(a) {
+  const configured = a.enabled, ok = configured && a.connected;
+  const dot = ok ? "ok" : configured ? "bad" : "warn";
+  const state = ok ? `Connected to Asterisk ${esc(a.asterisk_version)}`
+    : configured ? `Not connected: ${esc(a.error || "connecting…")}` : "SIP calls are off: no ARI user set";
+  const live = a.calls.map((c) => `<div><span class="live">● ${esc(c.state === "in_call" ? "In call" :
+      c.state === "ringing" ? "Ringing" : "Connecting")}</span> ${esc(c.caller)} → ${esc(c.kiosk)}` +
+      `${c.extension ? " (" + esc(c.extension) + ")" : ""} · ${since(c.since)}</div>`).join("");
+  const recent = a.history.slice(-5).reverse().map((c) => `<div class="line">${esc(c.caller || "A caller")} → ` +
+      `${esc(c.kiosk || "?")}: ${esc(ENDED[c.reason] || c.reason)} · ${ago(c.at)}</div>`).join("");
+  const user = a.username || "kiosk-gateway", app = a.app || "kiosk-intercom", pat = pattern(a.extension_start);
+  const ari = `[general]\nenabled = yes\n\n[${user}]\ntype = user\nread_only = no\npassword = CHOOSE-A-PASSWORD\n`;
+  const ext = `; Kiosk intercom: ${pat.slice(1)} rings a kiosk through Kiosk Intercom Gateway.\n` +
+    `exten => ${pat},1,NoOp(Kiosk intercom)\n same => n,Stasis(${app},\${EXTEN})\n same => n,Hangup()\n`;
+  if (setupOpen === null) setupOpen = !ok;
+  const dir = "/addon_configs/b35499aa_asterisk/asterisk";
+  $("asterisk").innerHTML = `
+    <h2><span class="dot ${dot}"></span>Asterisk</h2>
+    <div class="line">${state}${ok ? ` · app <code>${esc(app)}</code> at ${esc(a.ari_url)}` : ""}</div>
+    ${live || recent ? `<div class="calls">${live}${recent}</div>` : ""}
+    <details id="setup" ${setupOpen ? "open" : ""}><summary>Set up Asterisk for kiosk calls</summary>
+    <ol class="steps">
+      <li>Install the <b>Asterisk</b> app (TECH7Fox) and start it once, so it creates its config folders.</li>
+      <li>Create <code>${dir}/custom/ari.conf</code> (with the File editor or Samba app):${snip("ari", ari)}</li>
+      <li>Copy <code>${dir}/default/extensions.conf</code> to <code>${dir}/custom/extensions.conf</code> and add these
+          lines in its <code>[default]</code> section, above the <code>_X!</code> line:${snip("ext", ext)}</li>
+      <li>Restart the Asterisk app.</li>
+      <li>In this app's <b>Configuration</b>, set <b>ARI username</b> to <code>${esc(user)}</code> and
+          <b>ARI password</b> to the password you chose, save and restart.</li>
+      <li>Dial a kiosk's extension from any phone on Asterisk. The numbers are listed below.</li>
+    </ol></details>`;
+  $("setup").ontoggle = (e) => { setupOpen = e.target.open; };
+}
+
 async function load() {
   try {
     const res = await fetch("api/kiosks", {cache: "no-store"});
@@ -129,9 +203,10 @@ async function load() {
     showKeyCard();
     if ($("changekey")) $("changekey").onclick = () => { keyOpen = true; showKeyCard(); $("keyinput").focus(); };
     $("probe").onclick = async () => { await fetch("api/probe", {method: "POST"}); setTimeout(load, 1500); };
+    if (g.asterisk) renderAsterisk(g.asterisk);
     $("list").innerHTML = ks.length ? ks.map((k) => `
       <div class="k">
-        <span class="name">${esc(k.name)}</span>
+        <span class="name">${k.extension ? `<span class="ext">${esc(k.extension)}</span>` : ""}${esc(k.name)}</span>
         <span class="pill ${k.status}">${esc(k.status_text)}</span>
         <span class="meta">${esc(k.address)}:${k.admin_port}${k.area ? " · " + esc(k.area) : ""}` +
         `${k.version ? " · v" + esc(k.version) : ""} · ${k.source === "manual" ? "added by address" : "mDNS"}` +

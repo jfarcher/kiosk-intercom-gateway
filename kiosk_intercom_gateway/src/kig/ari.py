@@ -84,10 +84,6 @@ class Ari:
             data=media_id,
         )
 
-    async def channel_var(self, channel: str, name: str) -> str:
-        data = await self.request("GET", f"/channels/{channel}/variable", variable=name)
-        return str((data or {}).get("value") or "")
-
     async def bridge(self, *channels: str) -> str:
         b = await self.request("POST", "/bridges", type="mixing")
         await self.request("POST", f"/bridges/{b['id']}/addChannel", channel=",".join(channels))

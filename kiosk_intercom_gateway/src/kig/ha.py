@@ -25,6 +25,7 @@ _LOG = logging.getLogger(__name__)
 CORE_API = "http://supervisor/core/api"
 CORE_WS = "ws://supervisor/core/websocket"
 SUMMARY_ENTITY = "sensor.kiosk_intercom_gateway_kiosks"
+SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "version")
 
 
 async def supervisor_ingress_port(
@@ -182,7 +183,7 @@ class HomeAssistant:
                 "unit_of_measurement": "kiosks",
                 "state_class": "measurement",
                 "kiosks": [
-                    {key: k[key] for key in ("name", "id", "address", "status", "area", "dnd", "version")}
+                    {key: k[key] for key in SENSOR_FIELDS}
                     for k in snap
                 ],
             },

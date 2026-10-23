@@ -443,16 +443,19 @@ class CallManager:
             self.media_server.forget(c.media)
             await c.media.close()
         if self.ari is not None:
-            for task in (
-                self.ari.destroy_bridge(c.bridge) if c.bridge else None,
-                self.ari.hangup(c.ext_channel) if c.ext_channel else None,
-                None if c.sip_gone else self.ari.hangup(c.channel, HANGUP_CAUSE.get(reason, "normal")),
-            ):
-                if task is not None:
-                    try:
-                        await task
-                    except (AriError, aiohttp.ClientError, OSError) as err:
-                        _LOG.debug("cleanup: %s", err)
+            ari = self.ari
+            steps = []
+            if c.bridge:
+                steps.append(lambda: ari.destroy_bridge(c.bridge))
+            if c.ext_channel:
+                steps.append(lambda: ari.hangup(c.ext_channel))
+            if not c.sip_gone:
+                steps.append(lambda: ari.hangup(c.channel, HANGUP_CAUSE.get(reason, "normal")))
+            for step in steps:  # created one at a time, so none is left unawaited
+                try:
+                    await step()
+                except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
+                    _LOG.debug("cleanup: %s", err)
         self.calls.pop(c.id, None)
         self.by_channel.pop(c.channel, None)
         self.ext_channels.pop(c.ext_channel, None)

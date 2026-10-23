@@ -81,11 +81,13 @@ async def main() -> None:
             extension_start=cfg.extension_start,
             ring_timeout=cfg.ring_timeout,
             listen_port=cfg.intercom_port,
+            media_host=cfg.media_host,
         )
         try:
             await calls.start()
         except OSError as err:
-            _LOG.error("intercom listener cannot open port %d: %s", cfg.intercom_port, err.strerror or err)
+            _LOG.error("cannot open the intercom listener (port %d) or call audio (%s): %s",
+                       cfg.intercom_port, cfg.media_host, err.strerror or err)
             raise SystemExit(1) from err
         stack.push_async_callback(calls.stop)
 
@@ -100,7 +102,8 @@ async def main() -> None:
                 "key_fingerprint": roster.key_fingerprint,
                 "discovery": cfg.mdns,
                 "home_assistant": ha.available,
-                "asterisk": calls.status(),
+                "asterisk": {**calls.status(), "ari_url": cfg.ari_url, "username": cfg.ari_username,
+                             "extension_start": cfg.extension_start, "media_host": cfg.media_host},
             }
 
         async def set_key(key: str) -> dict:

@@ -1,19 +1,16 @@
 # Kiosk Intercom Gateway
 
 A Home Assistant app that joins the [Kiosk Satellite](https://github.com/jxlarrea/kiosk-satellite)
-intercom from the outside. The goal is a two-way gateway between the kiosks and an existing
-SIP PBX: dial an extension and a kiosk rings, or pick a phone from a kiosk's Call list.
+intercom from the outside, so SIP phones on Asterisk can call the kiosks.
 
-**Status: 0.1.0, discovery only.** This version finds and tracks every kiosk and checks that
-it can be called. It also carries the intercom protocol layer the call bridge will build on.
-No calls are placed yet.
+**Status: 0.2.0.** Dial a kiosk's extension and it rings like an intercom call, with
+two-way 16 kHz audio. Kiosks calling SIP phones comes next.
 
-## What 0.1.0 does
+## What it does
 
 - **Finds kiosks automatically** over mDNS (`_kiosk-satellite._tcp`), the same way kiosks find
-  each other. Kiosks mDNS cannot reach (another VLAN) can be added by address.
-- **Probes each kiosk** at `/api/intercom/identity` and shows the same status words as the
-  kiosks' own Kiosks list:
+  each other. Kiosks mDNS cannot reach (another VLAN) can be added by address. Each kiosk is
+  probed at `/api/intercom/identity` and shows the same status words as the kiosks' own list:
 
   | Status | Meaning |
   | --- | --- |
@@ -24,23 +21,28 @@ No calls are placed yet.
   | Encrypted | The kiosk uses **Encrypt communications**, which the gateway does not speak yet. |
   | Unreachable / Offline | The kiosk does not answer, or no longer announces itself. |
 
+- **Gives every kiosk an extension** (801, 802, …) that it keeps. A call to it over Asterisk's
+  ARI rings the kiosk with the caller's name. The kiosk's own Ring / Auto / DND rules apply,
+  and on answer the gateway bridges the audio. Declines, busy kiosks and timeouts reach the
+  caller as the matching SIP cause.
 - **Matches kiosks to Home Assistant** through their ESPHome devices, which adds each kiosk's
-  area and HA's `Intercom` call state. This is best effort, by name.
-- **Shows the roster** on an ingress page (sidebar: *Kiosk Intercom*). It is also published as
-  `sensor.kiosk_intercom_gateway_kiosks`: the state is the number of Ready kiosks, and the
-  attributes list every kiosk.
+  area and HA's `Intercom` call state (best effort, by name).
+- **Shows it all** on an ingress page (sidebar: *Kiosk Intercom*): kiosks, extensions, the
+  Asterisk connection, live and recent calls, and setup steps. It also publishes
+  `sensor.kiosk_intercom_gateway_kiosks`.
 
 ## Install
 
 1. In Home Assistant go to **Settings → Apps** (formerly Add-ons) **→ store → ⋮ → Repositories**
-   and add `https://github.com/jfarcher/kiosk-intercom-gateway`. While this repository is
-   private, Home Assistant needs credentials in the URL to read it.
+   and add `https://github.com/jfarcher/kiosk-intercom-gateway`.
 2. Install **Kiosk Intercom Gateway**.
 3. Start the app and open **Kiosk Intercom** in the sidebar.
 4. Paste the **Intercom key** from any kiosk (Settings → Intercom) and Save.
 
 Every kiosk needs **Remote management** and **Find other kiosks** turned on, as for the
-intercom itself.
+intercom itself. For calls, set up the [Asterisk app](https://github.com/TECH7Fox/asterisk-hass-addons)
+as the app's [documentation](kiosk_intercom_gateway/DOCS.md#2-connect-to-asterisk) describes:
+one `ari.conf` and three dialplan lines.
 
 ## How the intercom works
 
@@ -63,35 +65,48 @@ The protocol was worked out from reading the Kiosk Satellite source. No code fro
 
 The wire format is internal to Kiosk Satellite and may change between releases.
 
+## How a SIP call reaches a kiosk
+
+```
+phone ──SIP──▶ Asterisk ──Stasis(kiosk-intercom,801)──▶ gateway (ARI events)
+                  │                                       │ POST /api/intercom/call  ──▶ kiosk rings
+                  │                                       │ ◀── POST …/call/<id> answer
+                  │◀──ARI: answer, externalMedia, bridge──┤
+                  │◀═══ AudioSocket slin16 (TCP) ════════▶│◀═══ WebSocket PCM16 ═══▶ kiosk
+```
+
+The gateway acts as a kiosk toward the kiosk and as a Stasis app toward Asterisk. Call audio
+uses **AudioSocket**, not RTP. Asterisk 22's ARI external media over RTP sends slin16 (payload
+type 118) but drops it on receive: dynamic payload types need a receive mapping chan_rtp
+never sets up. AudioSocket carries slin16 both ways (kind `0x12`, Asterisk 20.13 / 21.8 /
+22.3 and later) in the kiosks' own byte order.
+
+CI places real calls through the Asterisk app's own image
+(`ghcr.io/tech7fox/asterisk-hass-addon`) into a simulated kiosk, and checks the audio in both
+directions and the clean-up afterwards.
+
 ## Roadmap
 
-1. **Discovery and roster.** Done in 0.1.0.
-2. **SIP → kiosk:** a call to an extension on your PBX rings the matching kiosk, which answers
-   with its own Ring / Auto / DND rules.
-3. **Kiosk → SIP:** SIP destinations are advertised over mDNS, one entry and port per
-   destination, so they appear in each kiosk's Call list.
-4. **Announce to all** from SIP, and HA entities and actions for the gateway's own calls.
+1. Discovery and roster. Done in 0.1.
+2. SIP → kiosk calls. Done in 0.2.
+3. **Kiosk → SIP:** SIP destinations advertised over mDNS so they appear in each kiosk's
+   Call list, and calls from them dialled through Asterisk.
+4. **Announce to all** from a phone, and HA entities and actions for the gateway's calls.
 5. HTTPS/WSS for kiosks with **Encrypt communications**.
-
-The open design question for steps 2 and 3 is how to reach the existing PBX:
-
-- **Register as SIP endpoints.** Works with any PBX (FreePBX, 3CX, a FRITZ!Box, plain
-  Asterisk), with a SIP stack inside the app.
-- **Asterisk ARI `externalMedia` with `slin16`.** Asterisk only, but 16 kHz end to end with no
-  SIP stack.
 
 ## Related work
 
 [Eibelucas/Kiosk-Satellite-SIP](https://github.com/Eibelucas/Kiosk-Satellite-SIP) is a SIP
 phone plugin plus a HAOS add-on that bundles Asterisk and bridges one configured kiosk to it.
-This project differs in its focus: many auto-discovered kiosks, both call directions, and your
-existing PBX.
+This project differs in its focus: many auto-discovered kiosks, each with its own extension,
+wideband audio, and the Asterisk app you may already run.
 
 ## Development
 
 ```sh
 pip install -r requirements-dev.txt
-pytest
+pytest                      # unit and end-to-end tests against a fake Asterisk and fake kiosks
+ruff check .
 cd kiosk_intercom_gateway/src && KIG_KEY=<key> KIG_OPTIONS=/dev/null python3 -m kig  # page on :8099
 ```
 

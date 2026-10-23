@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+- **SIP phones can call kiosks.** Dial a kiosk's extension on Asterisk and the kiosk
+  rings like an intercom call, with the caller's name on screen and the kiosk's own
+  Ring, Answer automatically and Do not disturb rules. Answered, the call is two-way
+  16 kHz audio. Either side can hang up. A kiosk that declines, is busy or on Do not
+  disturb gives the caller a busy signal.
+- Every kiosk gets an extension from 801 that it keeps, shown on the status page and
+  in `sensor.kiosk_intercom_gateway_kiosks`. Dialling a kiosk's name works too.
+- The status page shows the Asterisk connection, live and recent calls, and the
+  setup steps for the Home Assistant Asterisk app with ready-to-copy config.
+- New options: ARI address, username and password, first extension, ring timeout,
+  intercom port and call audio address.
+
 ## 0.1.3
 
 - Set the intercom key from the gateway's own page: paste it and Save. It takes
