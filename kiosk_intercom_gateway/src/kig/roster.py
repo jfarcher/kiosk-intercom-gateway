@@ -112,6 +112,7 @@ class Kiosk:
             "version": self.version,
             "status": status,
             "status_text": STATUS_TEXT[status],
+            "extension": self.extra.get("extension", ""),
             "source": "manual" if self.manual and not self.heard else "mdns",
             "dnd": self.dnd,
             "area": self.ha_area,

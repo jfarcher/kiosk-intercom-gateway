@@ -39,3 +39,34 @@ jobs:
           docker logs kig 2>&1 | tee kig.log
           grep -q "status page on port 8099" kig.log
           ! grep -q "no Supervisor token" kig.log
+
+  asterisk:
+    # A real call through the Home Assistant Asterisk app's own image.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-dev.txt
+      - name: Start Asterisk (ghcr.io/tech7fox/asterisk-hass-addon)
+        run: |
+          mkdir -p ast/asterisk
+          cp tests/integration/asterisk/config.json ast/config.json
+          cp -r tests/integration/asterisk/custom ast/asterisk/custom
+          docker run -d --name ast --network host -t -v "$PWD/ast:/config" \
+            ghcr.io/tech7fox/asterisk-hass-addon:latest
+          for i in $(seq 1 90); do
+            curl -fs -u kig:ci-secret http://127.0.0.1:8088/ari/asterisk/info >/dev/null && break
+            sleep 2
+          done
+          curl -fsS -u kig:ci-secret http://127.0.0.1:8088/ari/asterisk/info | head -c 300; echo
+      - name: Call a kiosk through the gateway
+        run: python3 tests/integration/e2e.py http://127.0.0.1:8088 kig ci-secret
+      - name: Check what Asterisk heard from the kiosk
+        run: |
+          docker cp ast:/tmp/kig-ci.wav kig-ci.wav
+          python3 tests/integration/e2e.py --recording kig-ci.wav
+      - name: Asterisk log
+        if: always()
+        run: docker logs ast 2>&1 | tail -80

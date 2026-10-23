@@ -1,0 +1,1 @@
+{"ami_password": "ci-ami", "auto_add": false, "generate_ssl_cert": true, "mailbox": false, "log_level": "info"}

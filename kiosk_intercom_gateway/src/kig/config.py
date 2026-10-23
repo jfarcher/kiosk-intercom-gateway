@@ -35,6 +35,14 @@ class Config:
     mdns: bool = True
     log_level: str = "info"
     web_port: int = 0  # 0: ask the Supervisor, else 8099
+    # Asterisk (ARI). No username: the call bridge stays off.
+    ari_url: str = "http://127.0.0.1:8088"
+    ari_username: str = ""
+    ari_password: str = ""
+    ari_app: str = "kiosk-intercom"
+    extension_start: int = 801
+    ring_timeout: int = 60
+    intercom_port: int = 0  # 0: any free port (kiosks learn it with each call)
     ingress_only: bool = True
 
 
@@ -55,8 +63,16 @@ def load(path: Path = OPTIONS) -> Config:
         mdns=bool(raw.get("mdns", True)),
         log_level=str(raw.get("log_level", os.environ.get("KIG_LOG", "info"))),
         web_port=int(os.environ.get("KIG_PORT", 0)),
+        ari_url=str(raw.get("ari_url") or "http://127.0.0.1:8088").strip(),
+        ari_username=str(raw.get("ari_username") or "").strip(),
+        ari_password=str(raw.get("ari_password") or ""),
+        ari_app=str(raw.get("ari_app") or "kiosk-intercom").strip(),
+        extension_start=int(raw.get("extension_start") or 801),
+        ring_timeout=int(raw.get("ring_timeout") or 60),
+        intercom_port=int(raw.get("intercom_port") or 0),
         # Outside the Supervisor (local runs) the page is open to localhost only anyway.
         ingress_only=os.environ.get("KIG_OPEN_WEB") != "1",
     )
     cfg.probe_interval = min(600, max(10, cfg.probe_interval))
+    cfg.ring_timeout = min(300, max(10, cfg.ring_timeout))
     return cfg
