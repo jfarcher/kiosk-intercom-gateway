@@ -1,7 +1,7 @@
 """SIP → kiosk calls: Asterisk hands a call to this app over ARI (Stasis),
 the gateway rings the kiosk over the intercom wire as if it were a kiosk,
-and on answer bridges Asterisk's external media (slin16 RTP) to the
-kiosk's audio WebSocket.
+and on answer bridges Asterisk's external media (slin16 over AudioSocket)
+to the kiosk's audio WebSocket.
 
 Kiosk Satellite's side of a call, as the gateway sees it (the gateway is the
 caller):
@@ -33,7 +33,7 @@ from . import __version__
 from .ari import Ari, AriError
 from .protocol import TokenVerifier, issue_token
 from .roster import Kiosk, Roster
-from .rtp import RtpBridge, rms
+from .media import AudioSocketServer, MediaLeg, rms
 from .state import State
 
 _LOG = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ HANGUP_CAUSE = {
     "failed": "congestion",
 }
 # Channels ARI creates for media work, never callers.
-HELPER_CHANNELS = ("UnicastRTP/", "Snoop/", "Announcer/", "Recorder/", "WebSocket/")
+HELPER_CHANNELS = ("AudioSocket/", "UnicastRTP/", "Snoop/", "Announcer/", "Recorder/", "WebSocket/")
 # What the kiosk says about a call → why it ended.
 SIGNAL_REASON = {"decline": "declined", "missed": "no_answer", "cancel": "ended", "hangup": "ended"}
 TALK_LEVEL = 400.0  # RMS of 16-bit samples above which the SIP side counts as talking
@@ -70,14 +70,13 @@ class Call:
     sip_gone: bool = False
     ext_channel: str = ""
     bridge: str = ""
-    rtp: RtpBridge | None = None
+    media: MediaLeg | None = None
     ws: aiohttp.ClientWebSocketResponse | None = None
     outbox: asyncio.Queue[bytes | str | None] = field(default_factory=asyncio.Queue)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     talking: bool = False
     talk_seen: float = 0.0
     timer: asyncio.TimerHandle | None = None
-    media_vars: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -120,7 +119,7 @@ class CallManager:
         ring_timeout: float = 60.0,
         listen_host: str = "0.0.0.0",
         listen_port: int = 0,
-        rtp_host: str = "127.0.0.1",
+        media_host: str = "127.0.0.1",
     ) -> None:
         self.roster = roster
         self.state = state
@@ -129,7 +128,7 @@ class CallManager:
         self.extension_start = extension_start
         self.ring_timeout = ring_timeout
         self.listen_host, self.listen_port = listen_host, listen_port
-        self.rtp_host = rtp_host
+        self.media_server = AudioSocketServer(media_host)
         self.calls: dict[str, Call] = {}
         self.by_channel: dict[str, Call] = {}
         self.ext_channels: dict[str, Call] = {}
@@ -172,6 +171,7 @@ class CallManager:
         return self._ws_http
 
     async def start(self) -> None:
+        await self.media_server.start()
         app = web.Application(client_max_size=65536)
         app.router.add_get("/api/intercom/identity", self._identity)
         app.router.add_post("/api/intercom/call", self._incoming)
@@ -188,6 +188,7 @@ class CallManager:
             await self.end(c, "ended")
         if self._runner:
             await self._runner.cleanup()
+        await self.media_server.stop()
         for session in (self._http, self._ws_http):
             if session:
                 await session.close()
@@ -200,6 +201,7 @@ class CallManager:
             "asterisk_version": self.ari.asterisk_version if self.ari else "",
             "app": self.ari.app if self.ari else "",
             "listener_port": self.port,
+            "media_port": self.media_server.port,
             "calls": [c.to_json() for c in self.calls.values()],
             "history": self.history[-10:],
         }
@@ -354,22 +356,12 @@ class CallManager:
         assert self.ari is not None
         try:
             await self.ari.answer(c.channel)
-            c.rtp = await RtpBridge.open(lambda frame: self._from_sip(c, frame), self.rtp_host)
-            host, port = c.rtp.local
-            ext = await self.ari.external_media(host, port)
+            c.media = MediaLeg(c.id, lambda frame: self._from_sip(c, frame))
+            self.media_server.expect(c.media)
+            ext = await self.ari.external_media(self.media_server.host, self.media_server.port, c.media.uuid)
             c.ext_channel = str(ext["id"])
             self.ext_channels[c.ext_channel] = c
-            vars_ = ext.get("channelvars") or {}
-            c.media_vars = dict(vars_)
-            _LOG.debug("external media %s: %s", c.ext_channel, vars_)
-            r_host = vars_.get("UNICASTRTP_LOCAL_ADDRESS") or await self.ari.channel_var(
-                c.ext_channel, "UNICASTRTP_LOCAL_ADDRESS"
-            )
-            r_port = vars_.get("UNICASTRTP_LOCAL_PORT") or await self.ari.channel_var(
-                c.ext_channel, "UNICASTRTP_LOCAL_PORT"
-            )
-            if r_port:
-                c.rtp.set_remote(str(r_host), int(r_port))
+            await asyncio.wait_for(c.media.connected.wait(), 5)
             c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
             token = issue_token(self.roster.key, c.id, self.state.gateway_id)
             base = c.kiosk.intercom_url.replace("http", "ws", 1)
@@ -380,7 +372,8 @@ class CallManager:
             _LOG.warning("connecting %s to %s failed: %s", c.caller, c.kiosk.name, err)
             await self.end(c, "failed")
             return
-        if c.state == "ended":
+        if c.state == "ended":  # hung up while we were connecting
+            await c.ws.close()
             return
         c.state, c.answered = "in_call", time.time()
         _LOG.info("%s and %s connected", c.caller, c.kiosk.name)
@@ -416,8 +409,8 @@ class CallManager:
         assert c.ws is not None
         async for msg in c.ws:
             if msg.type == aiohttp.WSMsgType.BINARY:
-                if c.rtp:
-                    c.rtp.send_frame(msg.data)
+                if c.media:
+                    c.media.send_frame(msg.data)
             elif msg.type == aiohttp.WSMsgType.TEXT:
                 if '"end"' in msg.data:
                     break
@@ -446,8 +439,9 @@ class CallManager:
         c.outbox.put_nowait(None)
         if c.ws is not None:
             await c.ws.close()
-        if c.rtp:
-            c.rtp.close()
+        if c.media:
+            self.media_server.forget(c.media)
+            await c.media.close()
         if self.ari is not None:
             for task in (
                 self.ari.destroy_bridge(c.bridge) if c.bridge else None,

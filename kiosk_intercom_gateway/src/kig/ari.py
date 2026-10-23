@@ -70,16 +70,18 @@ class Ari:
             if err.status != 404:  # already gone
                 raise
 
-    async def external_media(self, host: str, port: int, fmt: str = "slin16") -> dict[str, Any]:
+    async def external_media(self, host: str, port: int, media_id: str) -> dict[str, Any]:
+        """An AudioSocket channel carrying slin16 to and from ``host:port``,
+        identified by ``media_id`` (a UUID). See media.py for why not RTP."""
         return await self.request(
             "POST",
             "/channels/externalMedia",
             app=self.app,
             external_host=f"{host}:{port}",
-            format=fmt,
-            encapsulation="rtp",
-            transport="udp",
-            direction="both",
+            encapsulation="audiosocket",
+            transport="tcp",
+            format="slin16",
+            data=media_id,
         )
 
     async def channel_var(self, channel: str, name: str) -> str:

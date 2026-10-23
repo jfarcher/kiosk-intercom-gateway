@@ -101,7 +101,7 @@ async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, l
     check(True, f"{label}: the gateway opened the kiosk's audio socket")
 
     # The kiosk talks 1000 Hz in real time until the phone side hangs up.
-    pos, stats = 0, None
+    pos = 0
     call = next(iter(calls.calls.values()))
     for i in range(int(8000 / 80)):
         if kiosk.ws_closed.is_set():
@@ -121,15 +121,9 @@ async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, l
                                   params={"name": "kig-snoop", "format": "wav", "maxDurationSeconds": 4,
                                           "ifExists": "overwrite"}) as r:
                     note(f"{label}: snoop recording HTTP {r.status} {(await r.text())[:120]}")
-        if i == 40 and call.ext_channel:  # ~3 s in: what Asterisk saw from us
-            async with s.get(f"{url}/ari/channels/{call.ext_channel}/rtp_statistics") as r:
-                stats = await r.json() if r.status == 200 else {"http": r.status, "body": await r.text()}
-    if stats is not None:
-        note(f"{label}: Asterisk RTP stats " + json.dumps(stats)[:300])
-    if call.rtp:
-        note(f"{label}: gateway RTP sent {call.rtp.sent} to {call.rtp.remote} from {call.rtp.local}, "
-             f"received {call.rtp.received} from {call.rtp.source}, payload type {call.rtp.payload_type}; "
-             f"channelvars {call.media_vars}")
+    if call.media:
+        note(f"{label}: gateway AudioSocket sent {call.media.sent}, received {call.media.received} "
+             f"(20 ms messages) on port {calls.media_server.port}")
 
     check(await wait(lambda: kiosk.ws_closed.is_set(), 15), f"{label}: the call ended")
     check(any(json.loads(t).get("type") == "end" for t in kiosk.texts),

@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import struct
+import uuid
 from array import array
 from typing import Any
 
@@ -139,26 +140,43 @@ class FakeKiosk:
         await self.ws.close()
 
 
-class FakeRtpPeer(asyncio.DatagramProtocol):
-    """Asterisk's end of an external media channel."""
+class FakeAudioSocket:
+    """Asterisk's end of an AudioSocket external media channel, as
+    res_audiosocket.c behaves: connect, send the UUID, then audio."""
 
     def __init__(self) -> None:
-        self.transport: asyncio.DatagramTransport | None = None
-        self.packets: list[bytes] = []
+        self.reader: asyncio.StreamReader | None = None
+        self.writer: asyncio.StreamWriter | None = None
+        self.messages: list[tuple[int, bytes]] = []  # (kind, payload) from the gateway
+        self._task: asyncio.Task[None] | None = None
 
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = transport  # type: ignore[assignment]
+    async def connect(self, host: str, port: int, media_id: str) -> None:
+        self.reader, self.writer = await asyncio.open_connection(host, int(port))
+        self.writer.write(struct.pack("!BH", 0x01, 16) + uuid.UUID(media_id).bytes)
+        await self.writer.drain()
+        self._task = asyncio.ensure_future(self._read())
 
-    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-        self.packets.append(data)
+    async def _read(self) -> None:
+        assert self.reader is not None
+        try:
+            while True:
+                kind, length = struct.unpack("!BH", await self.reader.readexactly(3))
+                self.messages.append((kind, await self.reader.readexactly(length) if length else b""))
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
 
-    def send_be(self, target: tuple[str, int], le_pcm: bytes, seq: int, pt: int = 118) -> None:
-        a = array("h")
-        a.frombytes(le_pcm)
-        a.byteswap()
-        header = struct.pack("!BBHII", 0x80, pt, seq, seq * 320, 0x1234)
-        assert self.transport is not None
-        self.transport.sendto(header + a.tobytes(), target)
+    def audio(self) -> list[bytes]:
+        return [p for k, p in self.messages if k == 0x12]
+
+    def send(self, le_pcm: bytes) -> None:
+        assert self.writer is not None
+        self.writer.write(struct.pack("!BH", 0x12, len(le_pcm)) + le_pcm)
+
+    def close(self) -> None:
+        if self._task:
+            self._task.cancel()
+        if self.writer:
+            self.writer.close()
 
 
 class FakeAri:
@@ -167,7 +185,7 @@ class FakeAri:
         self.requests: list[tuple[str, str, dict[str, str]]] = []
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.channels: dict[str, dict[str, Any]] = {}
-        self.rtp: dict[str, tuple[FakeRtpPeer, tuple[str, int]]] = {}
+        self.media: dict[str, FakeAudioSocket] = {}
         self.event_ws_connected = asyncio.Event()
         self.server: TestServer | None = None
         self._n = 0
@@ -193,9 +211,8 @@ class FakeAri:
         return f"http://127.0.0.1:{self.server.port}"
 
     async def close(self) -> None:
-        for peer, _ in self.rtp.values():
-            if peer.transport:
-                peer.transport.close()
+        for sock in self.media.values():
+            sock.close()
         if self.server:
             await self.server.close()
 
@@ -247,6 +264,8 @@ class FakeAri:
         ch = self.channels.pop(cid, None)
         if ch is None:
             return web.json_response({"message": "Channel not found"}, status=404)
+        if cid in self.media:
+            self.media[cid].close()
         self.hangup_events(ch)
         return web.Response(status=204)
 
@@ -260,18 +279,20 @@ class FakeAri:
 
     async def _external_media(self, request: web.Request) -> web.Response:
         self._log(request)
-        host, port = request.query["external_host"].rsplit(":", 1)
-        loop = asyncio.get_running_loop()
-        _, peer = await loop.create_datagram_endpoint(FakeRtpPeer, local_addr=("127.0.0.1", 0))
-        local = peer.transport.get_extra_info("sockname")
+        q = request.query
+        if q.get("encapsulation") != "audiosocket" or q.get("transport") != "tcp":
+            return web.json_response({"message": "this fake only does AudioSocket"}, status=400)
+        host, port = q["external_host"].rsplit(":", 1)
         self._n += 1
         cid = f"ext-{self._n}"
-        ch = {"id": cid, "name": f"UnicastRTP/{host}:{port}-{self._n}"}
+        ch = {"id": cid, "name": f"AudioSocket/{host}:{port}-{q['data']}"}
+        sock = FakeAudioSocket()
+        await sock.connect(host, int(port), q["data"])  # Asterisk connects during the request
         self.channels[cid] = ch
-        self.rtp[cid] = (peer, (host, int(port)))
-        await self.events.put({"type": "StasisStart", "channel": ch, "args": []})
-        return web.json_response({**ch, "channelvars": {
-            "UNICASTRTP_LOCAL_ADDRESS": "127.0.0.1", "UNICASTRTP_LOCAL_PORT": str(local[1])}})
+        self.media[cid] = sock
+        # Like ARI: the channel enters the app with the UUID as its argument.
+        await self.events.put({"type": "StasisStart", "channel": ch, "args": [q["data"]]})
+        return web.json_response({**ch, "channelvars": {"AUDIOSOCKET_UUID": q["data"]}})
 
     # ── what Asterisk does on its own ───────────────────────────────
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import struct
 
 import pytest
 
@@ -14,7 +13,7 @@ from kig.bridge import CallManager
 from kig.probe import HttpProber
 from kig.protocol import FRAME_BYTES, issue_token
 from kig.roster import Roster
-from kig.rtp import CHUNK_BYTES, parse_rtp, swap16
+from kig.media import CHUNK_BYTES
 from kig.state import State
 
 KEY = "shared-intercom-key"
@@ -100,40 +99,38 @@ async def test_call_answer_audio_both_ways_and_kiosk_hangs_up(rig):
     await until(lambda: rig.calls.calls[call].state == "in_call", what="in_call")
     assert rig.fake_ari.calls_to("POST", "/channels/sip-1/answer")
     media = rig.fake_ari.calls_to("POST", "/channels/externalMedia")[0]
-    assert media["format"] == "slin16" and media["encapsulation"] == "rtp"
-    assert media["external_host"].startswith("127.0.0.1:")
+    assert media["format"] == "slin16" and media["encapsulation"] == "audiosocket"
+    assert media["transport"] == "tcp" and media["external_host"].startswith("127.0.0.1:")
     assert rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")[0]["channel"] == "sip-1,ext-1"
 
-    # Asterisk → kiosk: 8 × 20 ms big-endian packets become 2 × 80 ms LE frames.
-    peer, target = rig.fake_ari.rtp["ext-1"]
+    # Asterisk → kiosk: 8 × 20 ms AudioSocket messages become 2 × 80 ms frames, same byte order.
+    sock = rig.fake_ari.media["ext-1"]
     sent = le_samples(0, 320 * 8)
     for i in range(8):
-        peer.send_be(target, sent[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES], seq=i)
+        sock.send(sent[i * CHUNK_BYTES:(i + 1) * CHUNK_BYTES])
     await until(lambda: len(rig.kiosk.frames) >= 2, what="frames at the kiosk")
     assert all(len(f) == FRAME_BYTES for f in rig.kiosk.frames)
     assert ints(b"".join(rig.kiosk.frames[:2])) == ints(sent)
     # A loud ramp counts as talking.
     await until(lambda: any('"on":true' in t for t in rig.kiosk.texts), what="talk on")
 
-    # kiosk → Asterisk: 2 × 80 ms LE frames become 8 paced 20 ms BE packets.
+    # kiosk → Asterisk: 2 × 80 ms frames become 8 paced 20 ms slin16 messages.
     spoken = le_samples(5000, 320 * 8)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
     await rig.kiosk.talk(spoken[:FRAME_BYTES])
     await rig.kiosk.talk(spoken[FRAME_BYTES:])
-    await until(lambda: len(peer.packets) >= 8, what="RTP at Asterisk")
-    parsed = [parse_rtp(p) for p in peer.packets[:8]]
-    assert all(pt == 118 and len(pl) == CHUNK_BYTES for pt, pl in parsed)
-    assert ints(swap16(b"".join(pl for _, pl in parsed))) == ints(spoken)
-    seqs = [struct.unpack_from("!H", p, 2)[0] for p in peer.packets[:8]]
-    stamps = [struct.unpack_from("!I", p, 4)[0] for p in peer.packets[:8]]
-    assert all((b - a) % 65536 == 1 for a, b in zip(seqs, seqs[1:], strict=False))
-    assert all((b - a) % 2**32 == 320 for a, b in zip(stamps, stamps[1:], strict=False))
-    assert peer.packets[0][1] & 0x80  # marker on the first packet of a talk spurt
+    await until(lambda: len(sock.audio()) >= 8, what="audio at Asterisk")
+    assert loop.time() - t0 >= 0.12  # paced, not one burst
+    assert all(len(p) == CHUNK_BYTES for p in sock.audio()[:8])
+    assert ints(b"".join(sock.audio()[:8])) == ints(spoken)
 
     await rig.kiosk.hang_up()
     await until(lambda: not rig.calls.calls, what="the call to end")
     assert rig.fake_ari.hangups("sip-1") == ["normal"]
     assert rig.fake_ari.hangups("ext-1")
     assert rig.fake_ari.calls_to("DELETE", "/bridges/bridge-1")
+    await until(lambda: any(k == 0x00 for k, _ in sock.messages), what="AudioSocket hangup")
     assert rig.calls.history[-1]["reason"] == "ended"
 
 
@@ -242,10 +239,10 @@ def test_extensions_are_stable(tmp_path):
 
 
 async def test_helper_and_targetless_channels_are_ignored(rig):
-    for cid, name in (("s1", "Snoop/ext-1-0001"), ("u1", "UnicastRTP/127.0.0.1:1-1")):
+    for cid, name, args in (("s1", "Snoop/ext-1-0001", []), ("a1", "AudioSocket/127.0.0.1:1-x", ["x"])):
         ch = {"id": cid, "name": name}
         rig.fake_ari.channels[cid] = ch
-        await rig.fake_ari.events.put({"type": "StasisStart", "channel": ch, "args": []})
+        await rig.fake_ari.events.put({"type": "StasisStart", "channel": ch, "args": args})
     ch = {"id": "p1", "name": "PJSIP/101-0002", "caller": {"name": "x", "number": "101"}}
     rig.fake_ari.channels["p1"] = ch
     await rig.fake_ari.events.put({"type": "StasisStart", "channel": ch, "args": []})
