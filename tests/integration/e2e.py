@@ -127,8 +127,9 @@ async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, l
     if stats is not None:
         note(f"{label}: Asterisk RTP stats " + json.dumps(stats)[:300])
     if call.rtp:
-        note(f"{label}: gateway RTP sent {call.rtp.sent}, received {call.rtp.received}, "
-             f"remote {call.rtp.remote}, payload type {call.rtp.payload_type}")
+        note(f"{label}: gateway RTP sent {call.rtp.sent} to {call.rtp.remote} from {call.rtp.local}, "
+             f"received {call.rtp.received} from {call.rtp.source}, payload type {call.rtp.payload_type}; "
+             f"channelvars {call.media_vars}")
 
     check(await wait(lambda: kiosk.ws_closed.is_set(), 15), f"{label}: the call ended")
     check(any(json.loads(t).get("type") == "end" for t in kiosk.texts),

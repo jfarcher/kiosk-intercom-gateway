@@ -70,6 +70,7 @@ class RtpBridge(asyncio.DatagramProtocol):
         self.on_frame = on_frame
         self.transport: asyncio.DatagramTransport | None = None
         self.remote: tuple[str, int] | None = None
+        self.source: tuple[str, int] | None = None  # where Asterisk's packets come from
         self.payload_type = SLIN16_PT
         self.received = self.sent = 0
         self._inbound = bytearray()
@@ -116,6 +117,7 @@ class RtpBridge(asyncio.DatagramProtocol):
         if parsed is None:
             return
         pt, payload = parsed
+        self.source = addr[:2]
         if self.remote is None:
             self.remote = addr[:2]
         self.payload_type = pt

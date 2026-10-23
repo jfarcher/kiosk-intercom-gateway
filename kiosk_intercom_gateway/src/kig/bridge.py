@@ -77,6 +77,7 @@ class Call:
     talking: bool = False
     talk_seen: float = 0.0
     timer: asyncio.TimerHandle | None = None
+    media_vars: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -359,6 +360,8 @@ class CallManager:
             c.ext_channel = str(ext["id"])
             self.ext_channels[c.ext_channel] = c
             vars_ = ext.get("channelvars") or {}
+            c.media_vars = dict(vars_)
+            _LOG.debug("external media %s: %s", c.ext_channel, vars_)
             r_host = vars_.get("UNICASTRTP_LOCAL_ADDRESS") or await self.ari.channel_var(
                 c.ext_channel, "UNICASTRTP_LOCAL_ADDRESS"
             )

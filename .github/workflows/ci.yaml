@@ -62,7 +62,10 @@ jobs:
           done
           curl -fsS -u kig:ci-secret http://127.0.0.1:8088/ari/asterisk/info | head -c 300; echo
       - name: Call a kiosk through the gateway
-        run: python3 tests/integration/e2e.py http://127.0.0.1:8088 kig ci-secret
+        run: |
+          docker exec ast asterisk -rx "rtp set debug on" || true
+          docker exec ast asterisk -rx "core set verbose 3" || true
+          python3 tests/integration/e2e.py http://127.0.0.1:8088 kig ci-secret
       - name: Check what Asterisk heard from the kiosk
         run: |
           echo "::notice title=recordings::$(docker exec ast sh -c 'ls -la /tmp/kig* /var/spool/asterisk/recording/ 2>&1' | tr '\n' ' ')"
@@ -78,3 +81,9 @@ jobs:
             | grep -E "WARNING|ERROR|Record|RECORD|kig|UnicastRTP|strict" \
             | grep -v -E "declined to load|LDAP|phoneprov|getnameinfo|users.conf|non-required" | tail -25)
           echo "::notice title=asterisk log::$(echo "$lines" | sed ':a;N;$!ba;s/\n/%0A/g')"
+          clean=$(docker logs ast 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+          got=$(echo "$clean" | grep -c "Got  RTP" || true)
+          sent=$(echo "$clean" | grep -c "Sent RTP" || true)
+          sample=$(echo "$clean" | grep -E "Got  RTP|Sent RTP|strict|Strict|probation|learn" | awk '!seen[$0]++' | head -6)
+          other=$(echo "$clean" | grep -i -E "rtp|unicast" | grep -v -E "Got  RTP|Sent RTP" | tail -12)
+          echo "::notice title=asterisk rtp::got ${got}, sent ${sent}%0A$(echo "$sample" | sed ':a;N;$!ba;s/\n/%0A/g')%0A---%0A$(echo "$other" | sed ':a;N;$!ba;s/\n/%0A/g')"
