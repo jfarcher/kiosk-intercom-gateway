@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import sys
 import tempfile
 from array import array
@@ -35,12 +36,21 @@ def tone(freq: float, start: int, count: int, amp: int = 9000) -> bytes:
 
 
 def frequency(samples: list[int], rate: int) -> float:
-    crossings = sum(1 for a, b in zip(samples, samples[1:]) if a < 0 <= b)
+    crossings = sum(1 for a, b in zip(samples, samples[1:], strict=False) if a < 0 <= b)
     return crossings * rate / max(1, len(samples))
+
+
+def note(text: str) -> None:
+    """Printed, and an annotation on GitHub Actions (readable without the logs)."""
+    print(text, flush=True)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::notice title=e2e::{text}", flush=True)
 
 
 def check(ok: bool, what: str) -> None:
     print(("PASS " if ok else "FAIL ") + what, flush=True)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::{'notice' if ok else 'error'} title=e2e::{'PASS' if ok else 'FAIL'} {what}", flush=True)
     if not ok:
         raise SystemExit(1)
 
@@ -76,7 +86,7 @@ async def main(url: str, user: str, password: str) -> None:
                 break
             await asyncio.sleep(0.1)
         check(bool(kiosk.calls), "the kiosk rang")
-        print("  caller shown on the kiosk:", kiosk.calls[kiosk.last_call()]["from"]["name"])
+        note("caller shown on the kiosk: " + kiosk.calls[kiosk.last_call()]["from"]["name"])
         check(await kiosk.answer() == 200, "the kiosk answered")
         await asyncio.wait_for(kiosk.ws_open.wait(), 10)
         check(True, "the gateway opened the kiosk's audio socket")
@@ -93,7 +103,7 @@ async def main(url: str, user: str, password: str) -> None:
         heard = ints(b"".join(kiosk.frames[-25:]))  # the last two seconds
         rms = math.sqrt(sum(x * x for x in heard) / max(1, len(heard)))
         f = frequency(heard, SAMPLE_RATE)
-        print(f"  kiosk heard {len(kiosk.frames)} frames; last 2 s: {f:.0f} Hz, RMS {rms:.0f}")
+        note(f"kiosk heard {len(kiosk.frames)} frames; last 2 s: {f:.0f} Hz, RMS {rms:.0f}")
         check(all(len(x) == FRAME_BYTES for x in kiosk.frames), "every frame to the kiosk is 80 ms")
         check(400 <= f <= 480 and rms > 300, "the kiosk hears Asterisk's 440 Hz tone")
 
@@ -130,7 +140,7 @@ def analyse_recording(path: str) -> None:
     tail = samples[len(samples) // 3:]  # skip set-up
     rms = math.sqrt(sum(x * x for x in tail) / max(1, len(tail)))
     f = frequency(tail, rate)
-    print(f"  Asterisk recorded {len(samples) / rate:.1f} s at {rate} Hz: {f:.0f} Hz, RMS {rms:.0f}")
+    note(f"Asterisk recorded {len(samples) / rate:.1f} s at {rate} Hz: {f:.0f} Hz, RMS {rms:.0f}")
     check(900 <= f <= 1100 and rms > 300, "Asterisk hears the kiosk's 1000 Hz tone")
 
 

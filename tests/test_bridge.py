@@ -125,8 +125,8 @@ async def test_call_answer_audio_both_ways_and_kiosk_hangs_up(rig):
     assert ints(swap16(b"".join(pl for _, pl in parsed))) == ints(spoken)
     seqs = [struct.unpack_from("!H", p, 2)[0] for p in peer.packets[:8]]
     stamps = [struct.unpack_from("!I", p, 4)[0] for p in peer.packets[:8]]
-    assert all((b - a) % 65536 == 1 for a, b in zip(seqs, seqs[1:]))
-    assert all((b - a) % 2**32 == 320 for a, b in zip(stamps, stamps[1:]))
+    assert all((b - a) % 65536 == 1 for a, b in zip(seqs, seqs[1:], strict=False))
+    assert all((b - a) % 2**32 == 320 for a, b in zip(stamps, stamps[1:], strict=False))
     assert peer.packets[0][1] & 0x80  # marker on the first packet of a talk spurt
 
     await rig.kiosk.hang_up()
