@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiosk Intercom Gateway</title>
+<style>
+  :root {
+    --bg: #fafafa; --card: #fff; --fg: #1c1c1c; --muted: #6b6b6b; --line: #e3e3e3;
+    --ok: #1b8a3a; --warn: #b26a00; --bad: #c62828; --idle: #8a8a8a; --accent: #03a9f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111; --card: #1c1c1c; --fg: #e8e8e8; --muted: #9a9a9a; --line: #2e2e2e;
+            --ok: #4cc26b; --warn: #f0a63a; --bad: #ef5350; --idle: #777; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+         background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+         padding: 12px 14px; margin-bottom: 16px; }
+  .bar b { font-weight: 600; }
+  .bar .sp { flex: 1; }
+  button { font: inherit; border: 1px solid var(--line); background: transparent; color: var(--fg);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .list { display: grid; gap: 10px; }
+  .k { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+       display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
+  .k .name { font-weight: 600; }
+  .k .meta { color: var(--muted); font-size: 13px; grid-column: 1 / -1; overflow-wrap: anywhere; }
+  .pill { justify-self: end; align-self: start; font-size: 12px; font-weight: 600; border-radius: 999px;
+          padding: 2px 10px; border: 1px solid currentColor; white-space: nowrap; }
+  .ready { color: var(--ok); } .dnd, .encryption, .key, .no_key { color: var(--warn); }
+  .unreachable, .off { color: var(--bad); } .unknown, .offline { color: var(--idle); }
+  .empty { color: var(--muted); text-align: center; padding: 32px 8px; }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kiosk Intercom Gateway</h1>
+  <p class="sub">Kiosk Satellite kiosks found on the network and whether the gateway can call them.</p>
+  <div class="bar" id="bar">Loading…</div>
+  <div class="list" id="list"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ago = (t) => { if (!t) return "never"; const s = Math.round(Date.now() / 1000 - t);
+  return s < 60 ? `${s}s ago` : `${Math.round(s / 60)} min ago`; };
+
+async function load() {
+  try {
+    const res = await fetch("api/kiosks", {cache: "no-store"});
+    const data = await res.json();
+    const g = data.gateway, ks = data.kiosks;
+    const ready = ks.filter((k) => k.status === "ready").length;
+    $("bar").innerHTML =
+      `<span><b>${ready}</b> of ${ks.length} ready</span>` +
+      `<span>Key: ${g.key_fingerprint ? `<b>${esc(g.key_fingerprint)}</b>` : '<b class="warn">not set</b>'}</span>` +
+      `<span>mDNS: <b>${g.discovery ? "on" : "off"}</b></span>` +
+      `<span>Home Assistant: <b>${g.home_assistant ? "connected" : "off"}</b></span>` +
+      `<span class="sp"></span><span>v${esc(g.version)}</span>` +
+      `<button id="probe">Probe now</button>`;
+    $("probe").onclick = async () => { await fetch("api/probe", {method: "POST"}); setTimeout(load, 1500); };
+    $("list").innerHTML = ks.length ? ks.map((k) => `
+      <div class="k">
+        <span class="name">${esc(k.name)}</span>
+        <span class="pill ${k.status}">${esc(k.status_text)}</span>
+        <span class="meta">${esc(k.address)}:${k.admin_port}${k.area ? " · " + esc(k.area) : ""}` +
+        `${k.version ? " · v" + esc(k.version) : ""} · ${k.source === "manual" ? "added by address" : "mDNS"}` +
+        `${k.ha_intercom_state ? " · HA: " + esc(k.ha_intercom_state) : ""} · probed ${ago(k.probed_at)}</span>
+      </div>`).join("")
+      : `<div class="empty">No kiosks yet. Kiosks announce themselves when <b>Remote management</b> and
+         <b>Find other kiosks</b> are on. Kiosks on another network can be added by address in the app's configuration.</div>`;
+  } catch (e) {
+    $("bar").textContent = "Could not reach the gateway: " + e;
+  }
+}
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

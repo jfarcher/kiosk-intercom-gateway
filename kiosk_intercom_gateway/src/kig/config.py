@@ -1,0 +1,39 @@
+"""App options: /data/options.json under the Supervisor, environment for local runs."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+OPTIONS = Path(os.environ.get("KIG_OPTIONS", "/data/options.json"))
+
+
+@dataclass
+class Config:
+    intercom_key: str = ""
+    extra_kiosks: list[str] = field(default_factory=list)
+    probe_interval: int = 30
+    mdns: bool = True
+    log_level: str = "info"
+    web_port: int = 8099
+    ingress_only: bool = True
+
+
+def load(path: Path = OPTIONS) -> Config:
+    raw: dict = {}
+    if path.is_file():
+        raw = json.loads(path.read_text())
+    cfg = Config(
+        intercom_key=str(raw.get("intercom_key") or os.environ.get("KIG_KEY", "")).strip(),
+        extra_kiosks=[str(x) for x in raw.get("extra_kiosks") or [] if str(x).strip()],
+        probe_interval=int(raw.get("probe_interval", 30)),
+        mdns=bool(raw.get("mdns", True)),
+        log_level=str(raw.get("log_level", os.environ.get("KIG_LOG", "info"))),
+        web_port=int(os.environ.get("KIG_PORT", 8099)),
+        # Outside the Supervisor (local runs) the page is open to localhost only anyway.
+        ingress_only=os.environ.get("KIG_OPEN_WEB") != "1",
+    )
+    cfg.probe_interval = min(600, max(10, cfg.probe_interval))
+    return cfg

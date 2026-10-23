@@ -1,0 +1,19 @@
+configuration:
+  intercom_key:
+    name: Intercom key
+    description: >-
+      The kiosks' shared intercom key. Copy it from any kiosk under Settings,
+      Intercom (the box with the key). Kiosks only read Ready once it matches.
+  extra_kiosks:
+    name: Extra kiosks
+    description: >-
+      Kiosks mDNS cannot reach, such as another VLAN: host or host:port of their
+      remote admin (port 2324 by default). https://host:port for HTTPS admin.
+  mdns:
+    name: Discover kiosks over mDNS
+    description: Finds kiosks with Find other kiosks on, the way kiosks find each other.
+  probe_interval:
+    name: Probe interval
+    description: Seconds between identity checks of each kiosk.
+  log_level:
+    name: Log level

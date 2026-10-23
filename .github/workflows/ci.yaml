@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app image (amd64)
+        run: >
+          docker build
+          --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
+          -t kiosk-intercom-gateway:test kiosk_intercom_gateway
+      - name: Smoke test the image
+        run: |
+          docker run -d --name kig -e KIG_KEY=test -e KIG_OPEN_WEB=1 -p 8099:8099 \
+            --entrypoint python3 kiosk-intercom-gateway:test -m kig
+          for i in $(seq 1 20); do curl -fs localhost:8099/api/kiosks && break; sleep 1; done
+          curl -fs localhost:8099/api/kiosks | grep -q '"version"'
+          docker logs kig
