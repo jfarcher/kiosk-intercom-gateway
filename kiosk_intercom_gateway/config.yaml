@@ -1,5 +1,5 @@
 name: Kiosk Intercom Gateway
-version: "0.1.2"
+version: "0.1.3"
 slug: kiosk_intercom_gateway
 description: Tracks Kiosk Satellite intercom kiosks, groundwork for a SIP gateway
 url: https://github.com/jfarcher/kiosk-intercom-gateway

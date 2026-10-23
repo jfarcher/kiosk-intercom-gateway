@@ -109,3 +109,53 @@ def test_supervisor_token_falls_back_to_s6_copy(tmp_path, monkeypatch):
     assert config.supervisor_token() == "abc"
     monkeypatch.setenv("SUPERVISOR_TOKEN", "env")
     assert config.supervisor_token() == "env"
+
+
+async def test_key_endpoint_applies_key():
+    async def never(_):
+        return None
+
+    r = Roster(never)
+    r.heard({"id": "abc", "name": "Kitchen", "address": "10.0.0.5", "port": 2324})
+    r.kiosks["abc"].enabled, r.kiosks["abc"].fingerprint = True, fingerprint(KEY)
+    assert r.snapshot()[0]["status"] == "no_key"
+
+    async def set_key(key):
+        r.set_key(key)
+        return {"ok": True, "saved": True, "fingerprint": r.key_fingerprint}
+
+    app = make_app(r, lambda: {}, set_key=set_key)
+    async with TestClient(TestServer(app)) as client:
+        assert (await client.post("/api/key", json={"key": "  "})).status == 400
+        assert (await client.post("/api/key", data="nope")).status == 400
+        res = await client.post("/api/key", json={"key": f" {KEY} "})
+        assert (await res.json())["fingerprint"] == fingerprint(KEY)
+    assert r.key == KEY and r.snapshot()[0]["status"] == "ready"
+
+
+async def test_save_options_merges_and_reports_errors():
+    import pytest
+
+    from kig.ha import save_options
+
+    seen = []
+
+    async def options(request):
+        seen.append(await request.json())
+        if seen[-1]["options"].get("intercom_key") == "bad":
+            return web.json_response({"result": "error", "message": "invalid"}, status=400)
+        return web.json_response({"result": "ok"})
+
+    app = web.Application()
+    app.router.add_post("/addons/self/options", options)
+    server = TestServer(app)
+    await server.start_server()
+    url = f"http://127.0.0.1:{server.port}/addons/self/options"
+    try:
+        current = {"intercom_key": "", "extra_kiosks": ["10.0.0.9"], "mdns": True}
+        await save_options({"intercom_key": "new"}, current, token="t", url=url)
+        assert seen[-1] == {"options": {"intercom_key": "new", "extra_kiosks": ["10.0.0.9"], "mdns": True}}
+        with pytest.raises(RuntimeError, match="invalid"):
+            await save_options({"intercom_key": "bad"}, current, token="t", url=url)
+    finally:
+        await server.close()

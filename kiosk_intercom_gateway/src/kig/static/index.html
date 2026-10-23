@@ -38,6 +38,18 @@
   .unreachable, .off { color: var(--bad); } .unknown, .offline { color: var(--idle); }
   .empty { color: var(--muted); text-align: center; padding: 32px 8px; }
   .warn { color: var(--warn); }
+  .keycard { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+             padding: 14px; margin-bottom: 16px; }
+  .keycard h2 { font-size: 16px; margin: 0 0 4px; }
+  .keycard p { margin: 0 0 10px; color: var(--muted); }
+  .keycard.need { border-color: var(--warn); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row input { flex: 1 1 240px; min-width: 0; font: inherit; color: var(--fg); background: var(--bg);
+               border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .row input:focus { outline: none; border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .msg { margin-top: 8px; font-size: 13px; min-height: 1em; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -45,6 +57,19 @@
   <h1>Kiosk Intercom Gateway</h1>
   <p class="sub">Kiosk Satellite kiosks found on the network and whether the gateway can call them.</p>
   <div class="bar" id="bar">Loading…</div>
+  <div class="keycard" id="keycard" hidden>
+    <h2 id="keytitle">Intercom key</h2>
+    <p>On any kiosk, open <b>Settings → Intercom</b> and copy the <b>Intercom key</b>, then paste it here.
+       Every kiosk on the intercom shares it.</p>
+    <form class="row" id="keyform" autocomplete="off">
+      <input id="keyinput" type="password" placeholder="Paste the intercom key" spellcheck="false"
+             autocapitalize="off" aria-label="Intercom key">
+      <button type="button" id="keyshow">Show</button>
+      <button type="submit" class="primary">Save</button>
+      <button type="button" id="keycancel" hidden>Cancel</button>
+    </form>
+    <div class="msg" id="keymsg"></div>
+  </div>
   <div class="list" id="list"></div>
 </main>
 <script>
@@ -52,6 +77,39 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ago = (t) => { if (!t) return "never"; const s = Math.round(Date.now() / 1000 - t);
   return s < 60 ? `${s}s ago` : `${Math.round(s / 60)} min ago`; };
+
+let keyOpen = false, keySet = false;
+function showKeyCard() {
+  const card = $("keycard");
+  card.hidden = keySet && !keyOpen;
+  card.classList.toggle("need", !keySet);
+  $("keytitle").textContent = keySet ? "Change the intercom key" : "Add the intercom key";
+  $("keycancel").hidden = !keySet;
+}
+$("keyshow").onclick = () => {
+  const i = $("keyinput"); i.type = i.type === "password" ? "text" : "password";
+  $("keyshow").textContent = i.type === "password" ? "Show" : "Hide";
+};
+$("keycancel").onclick = () => { keyOpen = false; $("keymsg").textContent = ""; showKeyCard(); };
+$("keyform").onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = $("keymsg"), key = $("keyinput").value.trim();
+  if (!key) { msg.className = "msg err"; msg.textContent = "Paste the key first."; return; }
+  msg.className = "msg"; msg.textContent = "Saving…";
+  try {
+    const res = await fetch("api/key", {method: "POST", headers: {"content-type": "application/json"},
+                                        body: JSON.stringify({key})});
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "HTTP " + res.status);
+    $("keyinput").value = "";
+    keyOpen = false;
+    msg.className = "msg ok";
+    msg.textContent = data.saved ? `Saved. Fingerprint ${data.fingerprint}.` : data.note;
+    await load();
+  } catch (err) {
+    msg.className = "msg err"; msg.textContent = "Not saved: " + err.message;
+  }
+};
 
 async function load() {
   try {
@@ -65,7 +123,11 @@ async function load() {
       `<span>mDNS: <b>${g.discovery ? "on" : "off"}</b></span>` +
       `<span>Home Assistant: <b>${g.home_assistant ? "connected" : "off"}</b></span>` +
       `<span class="sp"></span><span>v${esc(g.version)}</span>` +
+      (g.key_fingerprint ? `<button id="changekey">Change key</button>` : "") +
       `<button id="probe">Probe now</button>`;
+    keySet = !!g.key_fingerprint;
+    showKeyCard();
+    if ($("changekey")) $("changekey").onclick = () => { keyOpen = true; showKeyCard(); $("keyinput").focus(); };
     $("probe").onclick = async () => { await fetch("api/probe", {method: "POST"}); setTimeout(load, 1500); };
     $("list").innerHTML = ks.length ? ks.map((k) => `
       <div class="k">

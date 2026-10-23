@@ -38,10 +38,16 @@ class Config:
     ingress_only: bool = True
 
 
+def raw_options(path: Path = OPTIONS) -> dict:
+    try:
+        raw = json.loads(path.read_text()) if path.is_file() else {}
+    except (OSError, ValueError):
+        raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def load(path: Path = OPTIONS) -> Config:
-    raw: dict = {}
-    if path.is_file():
-        raw = json.loads(path.read_text())
+    raw = raw_options(path)
     cfg = Config(
         intercom_key=str(raw.get("intercom_key") or os.environ.get("KIG_KEY", "")).strip(),
         extra_kiosks=[str(x) for x in raw.get("extra_kiosks") or [] if str(x).strip()],

@@ -36,8 +36,8 @@ No calls are placed yet.
    and add `https://github.com/jfarcher/kiosk-intercom-gateway`. While this repository is
    private, Home Assistant needs credentials in the URL to read it.
 2. Install **Kiosk Intercom Gateway**.
-3. Under **Configuration**, paste the **Intercom key** from any kiosk (Settings → Intercom).
-4. Start the app and open **Kiosk Intercom** in the sidebar.
+3. Start the app and open **Kiosk Intercom** in the sidebar.
+4. Paste the **Intercom key** from any kiosk (Settings → Intercom) and Save.
 
 Every kiosk needs **Remote management** and **Find other kiosks** turned on, as for the
 intercom itself.

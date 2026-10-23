@@ -10,7 +10,7 @@ from aiohttp import web
 
 from . import __version__, config
 from .discovery import Discovery
-from .ha import HomeAssistant, supervisor_ingress_port
+from .ha import HomeAssistant, save_options, supervisor_ingress_port
 from .probe import HttpProber
 from .roster import Roster
 from .web import make_app
@@ -72,7 +72,24 @@ async def main() -> None:
             await prober.close()
             raise SystemExit(1)
     port = port or DEFAULT_WEB_PORT
-    runner = web.AppRunner(make_app(roster, info, cfg.ingress_only), access_log=None)
+    async def set_key(key: str) -> dict:
+        """Applies a key at once and keeps it in the app's configuration."""
+        roster.set_key(key)
+        _LOG.info("intercom key changed (fingerprint %s)", roster.key_fingerprint)
+        if not config.under_supervisor():
+            return {"ok": True, "saved": False, "fingerprint": roster.key_fingerprint,
+                    "note": "Applied until restart (not running under Home Assistant)."}
+        try:
+            await save_options({"intercom_key": key}, config.raw_options())
+        except Exception as err:
+            _LOG.warning("could not save the key to the configuration: %s", err)
+            return {"ok": True, "saved": False, "fingerprint": roster.key_fingerprint,
+                    "note": f"Applied, but not saved ({err}). Set it under Configuration too."}
+        return {"ok": True, "saved": True, "fingerprint": roster.key_fingerprint}
+
+    runner = web.AppRunner(
+        make_app(roster, info, cfg.ingress_only, set_key=set_key), access_log=None
+    )
     await runner.setup()
     try:
         await web.TCPSite(runner, "0.0.0.0", port).start()

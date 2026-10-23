@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 from importlib import resources
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import web
@@ -19,6 +19,7 @@ def make_app(
     info: Callable[[], dict[str, Any]],
     ingress_only: bool = True,
     on_probe: Callable[[], Any] | None = None,
+    set_key: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
 ) -> web.Application:
     @web.middleware
     async def only_ingress(request: web.Request, handler: Any) -> web.StreamResponse:
@@ -47,7 +48,20 @@ def make_app(
             on_probe()
         return web.json_response({"ok": True})
 
+    async def key(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        value = body.get("key") if isinstance(body, dict) else None
+        if not isinstance(value, str) or not value.strip() or len(value) > 512:
+            return web.json_response({"ok": False, "error": "Paste the key from a kiosk."}, status=400)
+        if set_key is None:
+            return web.json_response({"ok": False, "error": "Not available."}, status=501)
+        return web.json_response(await set_key(value.strip()))
+
     app = web.Application(middlewares=[only_ingress])
+    app.router.add_post("/api/key", key)
     app.router.add_get("/", page)
     app.router.add_get("/api/kiosks", kiosks)
     app.router.add_post("/api/probe", reprobe)

@@ -6,8 +6,9 @@ PBX. Version 0.1.0 places no calls yet.
 
 ## Setup
 
-1. Paste the kiosks' shared **Intercom key** (any kiosk, Settings → Intercom).
-2. Start the app and open **Kiosk Intercom** in the sidebar.
+1. Start the app and open **Kiosk Intercom** in the sidebar.
+2. Paste the kiosks' shared **Intercom key** (any kiosk, Settings → Intercom) and Save.
+   It applies at once and is also kept under Configuration.
 
 Kiosks need **Remote management** and **Find other kiosks** on. A kiosk on another VLAN
 can be added under **Extra kiosks** as `host` or `host:port` (remote admin port, 2324 by

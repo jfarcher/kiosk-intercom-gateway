@@ -146,6 +146,7 @@ def parse_manual(entry: str) -> tuple[str, int, bool]:
 class Roster:
     def __init__(self, prober: Prober, key: str = "", probe_interval: float = 30.0) -> None:
         self._prober = prober
+        self.key = key
         self.key_fingerprint = fingerprint(key)
         self.probe_interval = probe_interval
         self.kiosks: dict[str, Kiosk] = {}
@@ -163,6 +164,13 @@ class Roster:
                 listener()
             except Exception:  # a listener must never break discovery
                 _LOG.exception("roster listener failed")
+
+    def set_key(self, key: str) -> None:
+        """A new shared key. Statuses follow at once: the probes already hold
+        each kiosk's fingerprint, so nothing needs asking again."""
+        self.key = key
+        self.key_fingerprint = fingerprint(key)
+        self._changed()
 
     # ── sources ──────────────────────────────────────────────────────
 

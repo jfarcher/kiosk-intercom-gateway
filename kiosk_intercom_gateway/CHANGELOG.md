@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Set the intercom key from the gateway's own page: paste it and Save. It takes
+  effect at once, without a restart, and is saved to the app's Configuration so
+  both stay in step. **Change key** replaces it later.
+
 ## 0.1.2
 
 - Fix 0.1.1 still starting on port 8099. s6-overlay hid the Supervisor's token

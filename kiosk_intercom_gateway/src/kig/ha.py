@@ -42,6 +42,29 @@ async def supervisor_ingress_port(
     return int(port) if port else None
 
 
+async def save_options(
+    changes: dict[str, Any],
+    current: dict[str, Any],
+    token: str | None = None,
+    url: str = "http://supervisor/addons/self/options",
+) -> None:
+    """Writes options back through the Supervisor, which validates them and
+    rewrites /data/options.json, so the Configuration tab shows them too. The
+    Supervisor replaces the options whole, hence ``current``."""
+    token = token or supervisor_token()
+    if not token:
+        raise RuntimeError("not running under the Supervisor")
+    body = {"options": {**current, **changes}}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+        async with s.post(url, json=body, headers={"Authorization": f"Bearer {token}"}) as r:
+            if r.status >= 300:
+                try:
+                    msg = (await r.json()).get("message")
+                except (ValueError, aiohttp.ContentTypeError):
+                    msg = None
+                raise RuntimeError(msg or f"Supervisor answered HTTP {r.status}")
+
+
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
