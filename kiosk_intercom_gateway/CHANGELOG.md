@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- A new icon and logo: a blue house with a phone inside.
+
 ## 0.2.2
 
 - Fix "Home Assistant update failed: WebSocketError message too big" on larger
