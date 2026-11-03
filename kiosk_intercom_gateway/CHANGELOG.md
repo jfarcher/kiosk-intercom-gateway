@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2
+
+- Fix "Home Assistant update failed: WebSocketError message too big" on larger
+  installs: the entity registry can be a single message over 4 MiB. The limit is now 64 MiB.
+- That failure also stopped `sensor.kiosk_intercom_gateway_kiosks` from being published.
+  Each Home Assistant step now fails on its own, so the sensor keeps updating.
+- The registries are re-read every 10 minutes instead of every minute. The sensor
+  and kiosks' call states still update every minute.
+
 ## 0.2.1
 
 - The ARI address works with or without `/ari` at the end

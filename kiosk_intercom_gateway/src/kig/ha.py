@@ -25,6 +25,11 @@ _LOG = logging.getLogger(__name__)
 CORE_API = "http://supervisor/core/api"
 CORE_WS = "ws://supervisor/core/websocket"
 SUMMARY_ENTITY = "sensor.kiosk_intercom_gateway_kiosks"
+# The entity registry of a large install is one websocket message of several
+# MB (4.3 MB reported), past aiohttp's 4 MiB default.
+MAX_WS_MESSAGE = 64 * 1024 * 1024
+REGISTRY_INTERVAL = 600.0  # registries change rarely and are big: re-read every 10 min
+PUBLISH_INTERVAL = 60.0  # the sensor, and kiosks' HA call state
 SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "version")
 
 
@@ -108,8 +113,11 @@ def match(kiosk_names: list[str], devices: list[dict[str, Any]]) -> dict[str, An
 
 
 class HomeAssistant:
-    def __init__(self, roster: Roster, token: str | None = None) -> None:
+    def __init__(
+        self, roster: Roster, token: str | None = None, core_api: str = CORE_API, core_ws: str = CORE_WS
+    ) -> None:
         self.roster = roster
+        self.core_api, self.core_ws = core_api, core_ws
         self.token = token or supervisor_token()
         self._session: aiohttp.ClientSession | None = None
         self._devices: list[dict[str, Any]] = []
@@ -129,7 +137,12 @@ class HomeAssistant:
     async def _ws_call(self, *types: str) -> list[Any]:
         assert self._session is not None
         results: list[Any] = []
-        async with self._session.ws_connect(CORE_WS, heartbeat=30) as ws:
+        async with self._session.ws_connect(
+            self.core_ws,
+            heartbeat=30,
+            max_msg_size=MAX_WS_MESSAGE,
+            timeout=aiohttp.ClientWSTimeout(ws_close=5),
+        ) as ws:
             await ws.receive_json()  # auth_required
             await ws.send_json({"type": "auth", "access_token": self.token})
             msg = await ws.receive_json()
@@ -157,7 +170,7 @@ class HomeAssistant:
 
     async def _state(self, entity_id: str) -> str:
         assert self._session is not None
-        async with self._session.get(f"{CORE_API}/states/{entity_id}", headers=self._headers) as r:
+        async with self._session.get(f"{self.core_api}/states/{entity_id}", headers=self._headers) as r:
             if r.status != 200:
                 return ""
             return str((await r.json()).get("state", ""))
@@ -189,38 +202,48 @@ class HomeAssistant:
             },
         }
         async with self._session.post(
-            f"{CORE_API}/states/{SUMMARY_ENTITY}",
+            f"{self.core_api}/states/{SUMMARY_ENTITY}",
             headers=self._headers,
             data=json.dumps(body),
         ) as r:
             if r.status >= 300:
                 _LOG.warning("publishing %s failed: HTTP %s", SUMMARY_ENTITY, r.status)
 
-    async def run(self, stop: asyncio.Event, interval: float = 60.0) -> None:
-        """Re-reads HA's devices every ``interval``; publishes on every roster
-        change (debounced) and with each refresh, which also restores the
-        sensor after HA restarts."""
+    async def run(
+        self,
+        stop: asyncio.Event,
+        registry_interval: float = REGISTRY_INTERVAL,
+        publish_interval: float = PUBLISH_INTERVAL,
+    ) -> None:
+        """Re-reads HA's registries every ``registry_interval`` and publishes
+        the sensor every ``publish_interval`` and on roster changes (debounced),
+        which also restores it after HA restarts. Each step fails on its own:
+        a registry that cannot be read must not stop the sensor."""
         if not self.available:
             _LOG.info("no Supervisor token: Home Assistant integration off")
             return
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         loop = asyncio.get_running_loop()
         next_refresh = 0.0
         try:
             while not stop.is_set():
-                try:
-                    if loop.time() >= next_refresh:
-                        next_refresh = loop.time() + interval
+                if loop.time() >= next_refresh:
+                    next_refresh = loop.time() + registry_interval
+                    try:
                         await self.refresh_devices()
-                    await self.enrich()
-                    await self.publish()
-                except Exception as err:  # HA restarting, etc.
-                    _LOG.warning("Home Assistant update failed: %s", err)
+                    except Exception as err:  # HA restarting, etc.
+                        _LOG.warning("reading Home Assistant's device registry failed: %s", err)
+                        next_refresh = loop.time() + publish_interval  # try again sooner
+                steps = ((self.enrich, "reading kiosks' states"), (self.publish, "publishing the sensor"))
+                for step, what in steps:
+                    try:
+                        await step()
+                    except Exception as err:
+                        _LOG.warning("Home Assistant: %s failed: %s", what, err)
                 self._dirty.clear()
-                wait = max(1.0, next_refresh - loop.time())
                 waiters = [asyncio.ensure_future(self._dirty.wait()), asyncio.ensure_future(stop.wait())]
-                done, pending = await asyncio.wait(waiters, timeout=wait, return_when=asyncio.FIRST_COMPLETED)
-                for p in pending:
+                await asyncio.wait(waiters, timeout=publish_interval, return_when=asyncio.FIRST_COMPLETED)
+                for p in waiters:
                     p.cancel()
                 await asyncio.sleep(1)  # debounce bursts of roster changes
         finally:
