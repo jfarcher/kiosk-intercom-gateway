@@ -30,6 +30,9 @@ SUMMARY_ENTITY = "sensor.kiosk_intercom_gateway_kiosks"
 MAX_WS_MESSAGE = 64 * 1024 * 1024
 REGISTRY_INTERVAL = 600.0  # registries change rarely and are big: re-read every 10 min
 PUBLISH_INTERVAL = 60.0  # the sensor, and kiosks' HA call state
+CALLS_ENTITY = "sensor.kiosk_intercom_gateway_calls"
+CALL_EVENT = "kiosk_intercom_gateway_call"
+PHONE_ENTITY = "binary_sensor.kiosk_intercom_phone_{slug}"
 SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "version")
 
 
@@ -122,10 +125,37 @@ class HomeAssistant:
         self._session: aiohttp.ClientSession | None = None
         self._devices: list[dict[str, Any]] = []
         self._dirty = asyncio.Event()
+        self.calls: Any = None  # CallManager, for the calls and phone sensors
+        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
+        self._phone_entities: set[str] = set()
 
     @property
     def available(self) -> bool:
         return bool(self.token)
+
+    def call_event(self, data: dict[str, Any]) -> None:
+        """A call rang, was answered or ended: an event for automations, and
+        the calls sensor follows."""
+        if not self.available:
+            return
+        try:
+            self._events.put_nowait(data)
+        except asyncio.QueueFull:
+            _LOG.warning("Home Assistant is not taking events; dropping %s", data.get("state"))
+        self.changed()
+
+    async def _send_events(self, stop: asyncio.Event) -> None:
+        assert self._session is not None
+        while not stop.is_set():
+            data = await self._events.get()
+            try:
+                async with self._session.post(
+                    f"{self.core_api}/events/{CALL_EVENT}", headers=self._headers, data=json.dumps(data)
+                ) as r:
+                    if r.status >= 300:
+                        _LOG.warning("firing %s failed: HTTP %s", CALL_EVENT, r.status)
+            except (aiohttp.ClientError, OSError, TimeoutError) as err:
+                _LOG.warning("firing %s failed: %s", CALL_EVENT, err)
 
     def changed(self) -> None:
         self._dirty.set()
@@ -208,6 +238,57 @@ class HomeAssistant:
         ) as r:
             if r.status >= 300:
                 _LOG.warning("publishing %s failed: HTTP %s", SUMMARY_ENTITY, r.status)
+        if self.calls is not None:
+            await self._publish_calls()
+
+    async def _set_state(self, entity: str, body: dict[str, Any]) -> None:
+        assert self._session is not None
+        async with self._session.post(
+            f"{self.core_api}/states/{entity}", headers=self._headers, data=json.dumps(body)
+        ) as r:
+            if r.status >= 300:
+                _LOG.warning("publishing %s failed: HTTP %s", entity, r.status)
+
+    async def _publish_calls(self) -> None:
+        status = self.calls.status()
+        live = status["calls"]
+        await self._set_state(CALLS_ENTITY, {
+            "state": len(live),
+            "attributes": {
+                "friendly_name": "Kiosk intercom: calls",
+                "icon": "mdi:phone-in-talk" if live else "mdi:phone",
+                "unit_of_measurement": "calls",
+                "calls": [
+                    {"direction": "phone_to_kiosk" if c["direction"] == "in" else "kiosk_to_phone",
+                     "state": c["state"], "kiosk": c["kiosk"], "kiosk_extension": c["extension"],
+                     "phone": c["caller"], "since": c["since"]}
+                    for c in live
+                ],
+            },
+        })
+        # One connectivity sensor per phone kiosks may call; gone ones removed.
+        seen = set()
+        for p in status.get("phones", []):
+            if not p["selected"]:
+                continue
+            entity = PHONE_ENTITY.format(slug=re.sub(r"[^a-z0-9]+", "_", p["extension"].lower()).strip("_"))
+            seen.add(entity)
+            await self._set_state(entity, {
+                "state": "on" if p["state"] == "online" else "off",
+                "attributes": {
+                    "friendly_name": f"{p['name']} registered",
+                    "device_class": "connectivity",
+                    "extension": p["extension"],
+                    "on_kiosks": p["offered"],
+                    "busy": p["busy"],
+                    "found_by": p.get("seen_by", []),
+                },
+            })
+        for entity in self._phone_entities - seen:
+            assert self._session is not None
+            async with self._session.delete(f"{self.core_api}/states/{entity}", headers=self._headers):
+                pass
+        self._phone_entities = seen
 
     async def run(
         self,
@@ -223,6 +304,7 @@ class HomeAssistant:
             _LOG.info("no Supervisor token: Home Assistant integration off")
             return
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        sender = asyncio.ensure_future(self._send_events(stop))
         loop = asyncio.get_running_loop()
         next_refresh = 0.0
         try:
@@ -247,4 +329,5 @@ class HomeAssistant:
                     p.cancel()
                 await asyncio.sleep(1)  # debounce bursts of roster changes
         finally:
+            sender.cancel()
             await self._session.close()

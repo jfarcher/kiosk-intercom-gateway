@@ -276,6 +276,7 @@ class FakeAri:
         r.add_post("/ari/bridges", self._bridge)
         r.add_post("/ari/bridges/{id}/addChannel", self._record)
         r.add_delete("/ari/bridges/{id}", self._record)
+        r.add_delete("/ari/playbacks/{id}", self._record)
         self.server = TestServer(app, host="127.0.0.1")
         await self.server.start_server()
 
@@ -344,6 +345,7 @@ class FakeAri:
     def phone_answers(self, cid: str) -> None:
         """The dialled phone picks up: the channel enters the app with its appArgs."""
         q = next(o for o in self.originated if o["id"] == cid)
+        self.channels[cid]["state"] = "Up"
         self.events.put_nowait({"type": "StasisStart", "channel": self.channels[cid],
                                 "args": q["appArgs"].split(",")})
 
@@ -363,6 +365,9 @@ class FakeAri:
         self._log(request)
         if request.match_info["id"] not in self.channels:
             return web.json_response({"message": "Channel not found"}, status=404)
+        if request.match_info["op"] == "play":
+            self._n += 1
+            return web.json_response({"id": f"pb-{self._n}", "media_uri": request.query.get("media")})
         return web.Response(status=204)
 
     async def _hangup(self, request: web.Request) -> web.Response:

@@ -26,6 +26,7 @@ sys.path[:0] = [str(Path(__file__).parents[1]), str(Path(__file__).parents[2] / 
 from fakes import FakeKiosk, ints  # noqa: E402
 from kig.ari import Ari  # noqa: E402
 from kig.bridge import CallManager  # noqa: E402
+from kig.commands import handle  # noqa: E402
 from kig.phones import PhoneDirectory  # noqa: E402
 from kig.probe import HttpProber  # noqa: E402
 from kig.protocol import FRAME_BYTES, SAMPLE_RATE  # noqa: E402
@@ -182,6 +183,41 @@ async def phone_call(kiosk: FakeKiosk, calls: CallManager, phones: PhoneDirector
         check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears the phone's 440 Hz tone")
 
 
+async def click_to_call(kiosk: FakeKiosk, calls: CallManager, s, url, label: str) -> None:
+    """The Home Assistant call action: Asterisk rings phone 101; once it answers
+    (with ringback meanwhile) the kiosk rings, showing the phone."""
+    kiosk.calls.clear()
+    kiosk.frames.clear()
+    kiosk.texts.clear()
+    kiosk.ws_open.clear()
+    kiosk.ws_closed.clear()
+    events: list[dict] = []
+    calls.listeners.append(events.append)
+    error = await handle(calls, {"action": "call", "phone": "101", "kiosk": "Kitchen"})
+    check(error == "", f"{label}: the action was taken {error}")
+    check(await wait(lambda: kiosk.calls, 15), f"{label}: the phone answered and the kiosk rang")
+    frm = kiosk.calls[kiosk.last_call()]["from"]
+    note(f"{label}: the kiosk shows {frm['name']!r}")
+    check(frm["name"] == "CI Tone Phone (101)", f"{label}: the kiosk shows the phone")
+    await asyncio.sleep(1)  # ringback on the phone meanwhile
+    check(await kiosk.answer() == 200, f"{label}: the kiosk answered")
+    await asyncio.wait_for(kiosk.ws_open.wait(), 10)
+    check(await wait(lambda: kiosk.ws_closed.is_set(), 15), f"{label}: the phone hung up")
+    heard = ints(b"".join(kiosk.frames[-20:]))
+    f, rms = frequency(heard, SAMPLE_RATE), level(heard)
+    note(f"{label}: kiosk heard {len(kiosk.frames)} frames; last 1.6 s: {f:.0f} Hz, RMS {rms:.0f}")
+    check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears the phone")
+    check(await wait(lambda: not calls.calls, 5), f"{label}: the gateway cleaned the call up")
+    await asyncio.sleep(1)
+    async with s.get(f"{url}/ari/channels") as r:
+        left = await r.json()
+    check(not left, f"{label}: no channels left in Asterisk {[c['name'] for c in left]}")
+    states = [e["state"] for e in events]
+    note(f"{label}: events {states}")
+    check(states == ["ringing", "answered", "ended"], f"{label}: Home Assistant events in order")
+    calls.listeners.remove(events.append)
+
+
 async def main(url: str, user: str, password: str) -> None:
     kiosk = FakeKiosk(KEY)
     await kiosk.start()
@@ -218,6 +254,7 @@ async def main(url: str, user: str, password: str) -> None:
         check(phones.phones["101"].label == "CI Tone Phone (101)", "phones are named by their caller ID")
         await phone_call(kiosk, calls, phones, s, url, "101", "call 3 (kiosk → phone 101)")
         await phone_call(kiosk, calls, phones, s, url, "102", "call 4 (kiosk → phone 102, recorded)")
+        await click_to_call(kiosk, calls, s, url, "call 5 (the call action: phone 101, then the kiosk)")
         await phones.close()
     flush_report()
 

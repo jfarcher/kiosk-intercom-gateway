@@ -18,6 +18,8 @@ hassio_api: true
 panel_icon: mdi:phone-voip
 panel_title: Kiosk Intercom
 homeassistant_api: true
+# Actions from automations arrive on stdin (hassio.addon_stdin).
+stdin: true
 stage: experimental
 options:
   intercom_key: ""

@@ -30,6 +30,7 @@ import asyncio
 import logging
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,7 +79,7 @@ class Call:
     caller: str  # the SIP side, as a label
     direction: str = "in"  # in: phone → kiosk; out: kiosk → phone
     peer_url: str = ""  # where the kiosk takes signals about this call
-    phone: str = ""  # out: the phone's extension
+    phone: str = ""  # out: the phone's extension; in: the caller's number
     state: str = "ringing"  # ringing → connecting → in_call → ended
     started: float = field(default_factory=time.time)
     answered: float | None = None
@@ -91,6 +92,7 @@ class Call:
     ws_ready: asyncio.Event = field(default_factory=asyncio.Event)
     outbox: asyncio.Queue[bytes | str | None] = field(default_factory=asyncio.Queue)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    ringback: str = ""  # a playback on an already answered SIP side (the call action)
     talking: bool = False
     talk_seen: float = 0.0
     timer: asyncio.TimerHandle | None = None
@@ -165,6 +167,8 @@ class CallManager:
         self._runner: web.AppRunner | None = None
         self.port = 0
         self.phones: Any = None  # PhoneDirectory, when kiosks may call phones
+        # Told of every call as it rings, is answered and ends (Home Assistant events).
+        self.listeners: list[Callable[[dict[str, Any]], None]] = []
         self.out_ring_timeout = min(ring_timeout, 30.0)  # a calling kiosk gives up at 30 s + 10
         roster.on_change(self.assign_extensions)
         self.assign_extensions()
@@ -306,8 +310,12 @@ class CallManager:
                     asyncio.ensure_future(self._hangup_quietly(cid))
                 return
             target = str(args[0])
-            number = str((channel.get("caller") or {}).get("number") or "")
-            asyncio.ensure_future(self.place(cid, target, caller_label(channel), number))
+            answered = str(channel.get("state") or "") == "Up"
+            # A call the gateway itself started (the call action) says who the
+            # SIP side is in its appArgs: target,label,number.
+            label = str(args[1]) if len(args) > 1 and args[1] else caller_label(channel)
+            number = str(args[2]) if len(args) > 2 else str((channel.get("caller") or {}).get("number") or "")
+            asyncio.ensure_future(self.place(cid, target, label, number, answered=answered))
         elif kind in ("StasisEnd", "ChannelDestroyed"):
             c = self.by_channel.get(cid)
             if c is not None:
@@ -331,7 +339,9 @@ class CallManager:
 
     # ── placing a call ───────────────────────────────────────────────
 
-    async def place(self, channel: str, target: str, caller: str, number: str = "") -> None:
+    async def place(
+        self, channel: str, target: str, caller: str, number: str = "", answered: bool = False
+    ) -> None:
         assert self.ari is not None
         k = self.kiosk_for(target)
         if k is None:
@@ -348,11 +358,15 @@ class CallManager:
         if channel in self._gone:
             _LOG.info("%s hung up before %s was rung", caller, k.name)
             return
-        c = Call(id=self._call_id(), kiosk=k, channel=channel, caller=caller, peer_url=k.intercom_url)
+        c = Call(id=self._call_id(), kiosk=k, channel=channel, caller=caller, peer_url=k.intercom_url,
+                 phone=number)
         self.calls[c.id] = c
         self.by_channel[channel] = c
         try:
-            await self.ari.ring(channel)
+            if answered:  # a phone that picked up a call action: ringback until the kiosk answers
+                c.ringback = await self.ari.play(channel, "tone:ring")
+            else:
+                await self.ari.ring(channel)
         except AriError as err:
             _LOG.debug("ring %s: %s", channel, err)
         _LOG.info("%s calling %s (%s)", caller, k.name, c.id)
@@ -370,6 +384,7 @@ class CallManager:
             c.timer = loop.call_later(
                 self.ring_timeout, lambda: asyncio.ensure_future(self._ring_timeout(c))
             )
+            self._emit(c, "ringing")
             return
         if code == 403:
             _LOG.warning("%s refused the call: different intercom key", k.name)
@@ -392,6 +407,11 @@ class CallManager:
             _LOG.debug("hangup %s: %s", channel, err)
         self.history.append({"caller": caller, "kiosk": target, "state": "ended", "reason": reason,
                              "at": time.time()})
+        k = self.kiosk_for(target) if target else None
+        self._tell({"call_id": "", "direction": "phone_to_kiosk", "state": "ended", "reason": reason,
+                    "kiosk": k.name if k else target, "kiosk_id": k.id if k else "",
+                    "kiosk_extension": k.extra.get("extension", "") if k else "",
+                    "phone": caller, "phone_number": "", "duration": 0})
 
     # ── the media ────────────────────────────────────────────────────
 
@@ -408,6 +428,7 @@ class CallManager:
 
     def _go_live(self, c: Call) -> None:
         c.state, c.answered = "in_call", time.time()
+        self._emit(c, "answered")
         a, b = (c.caller, c.kiosk.name) if c.direction == "in" else (c.kiosk.name, c.caller)
         _LOG.info("%s and %s connected", a, b)
         c.outbox.put_nowait('{"type":"talk","on":false}')
@@ -416,6 +437,9 @@ class CallManager:
     async def _connect(self, c: Call) -> None:
         assert self.ari is not None
         try:
+            if c.ringback:
+                await self.ari.stop_playback(c.ringback)
+                c.ringback = ""
             await self.ari.answer(c.channel)
             await self._bridge_media(c)
             token = issue_token(self.roster.key, c.id, self.state.gateway_id)
@@ -478,6 +502,11 @@ class CallManager:
         previous, c.state, c.reason = c.state, "ended", reason
         if c.timer:
             c.timer.cancel()
+        if c.ringback and self.ari is not None and not c.sip_gone:
+            try:
+                await self.ari.stop_playback(c.ringback)
+            except (AriError, aiohttp.ClientError, OSError, TimeoutError):
+                pass
         if tell_kiosk:
             if c.ws is not None and not c.ws.closed:
                 try:
@@ -520,6 +549,7 @@ class CallManager:
         a, b = (c.caller, c.kiosk.name) if c.direction == "in" else (c.kiosk.name, c.caller)
         _LOG.info("call %s → %s ended: %s%s", a, b, reason, length)
         self.history.append({**c.to_json(), "at": time.time()})
+        self._emit(c, "ended")
         del self.history[:-20]
 
     # ── kiosk → phone ────────────────────────────────────────────────
@@ -607,6 +637,7 @@ class CallManager:
         c.timer = loop.call_later(
             self.out_ring_timeout + 5, lambda: asyncio.ensure_future(self._ring_timeout(c))
         )
+        self._emit(c, "ringing")
 
     async def _phone_answered(self, c: Call) -> None:
         """The phone picked up: bridge its audio, tell the kiosk, take its socket."""
@@ -663,6 +694,79 @@ class CallManager:
             await self.ari.hangup(channel)
         except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
             _LOG.debug("hangup %s: %s", channel, err)
+
+    # ── actions (Home Assistant) ─────────────────────────────────────
+
+    async def action_call(self, phone: str, kiosk: str) -> str:
+        """Rings ``phone`` and, once it answers, the kiosk: click-to-call. The
+        phone shows the kiosk calling; the kiosk shows the phone. Returns ''
+        or why not."""
+        if self.ari is None or not self.ari.connected:
+            return "Asterisk is not connected"
+        k = self.kiosk_for(kiosk)
+        if k is None:
+            return f"no kiosk by the name or extension {kiosk!r}"
+        phone = phone.strip()
+        endpoint = phone if "/" in phone else f"PJSIP/{phone}"
+        number = phone.rsplit("/", 1)[-1]
+        known = self.phones.phones.get(number) if self.phones else None
+        if known:
+            label = known.label
+        else:
+            cid = await self.ari.endpoint_callerid(number)
+            label = f"{cid} ({number})" if cid else f"Phone {number}"
+        label = label.replace(",", " ")  # ARI splits appArgs on commas
+        ext = k.extra.get("extension", "")
+        target = ext or k.id
+        try:
+            await self.ari.originate(
+                endpoint, f"{target},{label},{number}", f'"{k.name}" <{ext}>' if ext else f'"{k.name}"',
+                int(self.out_ring_timeout),
+            )
+        except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
+            return f"could not ring {phone}: {err}"
+        _LOG.info("call action: ringing %s, then %s", label, k.name)
+        return ""
+
+    async def action_hangup(self, kiosk: str = "", phone: str = "", call: str = "") -> int:
+        """Ends the calls that match (all of them when nothing is named); how many."""
+        k = self.kiosk_for(kiosk) if kiosk else None
+        if kiosk and k is None:
+            return 0
+        matched = [
+            c for c in list(self.calls.values())
+            if (not call or c.id == call)
+            and (not k or c.kiosk.id == k.id)
+            and (not phone or c.phone == phone.rsplit("/", 1)[-1])
+        ]
+        for c in matched:
+            await self.end(c, "ended")
+        return len(matched)
+
+    # ── telling Home Assistant ───────────────────────────────────────
+
+    def _emit(self, c: Call, state: str) -> None:
+        data = {
+            "call_id": c.id,
+            "direction": "phone_to_kiosk" if c.direction == "in" else "kiosk_to_phone",
+            "state": state,  # ringing, answered, ended
+            "kiosk": c.kiosk.name,
+            "kiosk_id": c.kiosk.id,
+            "kiosk_extension": c.kiosk.extra.get("extension", ""),
+            "phone": c.caller,
+            "phone_number": c.phone,
+        }
+        if state == "ended":
+            data["reason"] = c.reason
+            data["duration"] = round(time.time() - c.answered) if c.answered else 0
+        self._tell(data)
+
+    def _tell(self, data: dict[str, Any]) -> None:
+        for listener in self.listeners:
+            try:
+                listener(data)
+            except Exception:
+                _LOG.exception("call listener failed")
 
     # ── helpers ──────────────────────────────────────────────────────
 

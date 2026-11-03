@@ -111,3 +111,94 @@ async def test_big_registry_and_sensor_survives_a_failed_read():
         stop.set()
         await asyncio.wait_for(task, 5)
         await server.close()
+
+
+async def test_call_events_and_sensors_reach_home_assistant():
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from kig.ha import HomeAssistant
+    from kig.roster import Roster
+
+    fired, states, deleted = [], {}, []
+
+    async def ws(request):  # an empty registry is enough here
+        sock = web.WebSocketResponse()
+        await sock.prepare(request)
+        await sock.send_json({"type": "auth_required"})
+        await sock.receive_json()
+        await sock.send_json({"type": "auth_ok"})
+        async for msg in sock:
+            m = msg.json()
+            await sock.send_json({"id": m["id"], "type": "result", "success": True, "result": []})
+        return sock
+
+    async def event(request):
+        fired.append((request.match_info["type"], await request.json()))
+        return web.json_response({"message": "Event fired."})
+
+    async def state(request):
+        entity = request.match_info["entity"]
+        if request.method == "DELETE":
+            deleted.append(entity)
+            states.pop(entity, None)
+        elif request.method == "POST":
+            states[entity] = await request.json()
+        return web.json_response({})
+
+    app = web.Application()
+    app.router.add_get("/websocket", ws)
+    app.router.add_post("/api/events/{type}", event)
+    app.router.add_route("*", "/api/states/{entity}", state)
+    server = TestServer(app, host="127.0.0.1")
+    await server.start_server()
+
+    phones = [
+        {"extension": "101", "name": "Alice (101)", "state": "online", "selected": True, "offered": True,
+         "busy": False, "seen_by": ["Kitchen"]},
+        {"extension": "102", "name": "Phone 102", "state": "offline", "selected": True, "offered": False,
+         "busy": False, "seen_by": []},
+        {"extension": "trunk", "name": "trunk", "state": "online", "selected": False, "offered": False,
+         "busy": False, "seen_by": []},
+    ]
+
+    class Calls:
+        def status(self):
+            return {"calls": [{"direction": "out", "state": "ringing", "kiosk": "Kitchen", "extension": "801",
+                               "caller": "Alice (101)", "since": 1.0}], "phones": phones}
+
+    async def never(_):
+        return None
+
+    base = f"http://127.0.0.1:{server.port}"
+    ha = HomeAssistant(Roster(never), token="t", core_api=f"{base}/api", core_ws=f"{base}/websocket")
+    ha.calls = Calls()
+    stop = asyncio.Event()
+    task = asyncio.ensure_future(ha.run(stop, registry_interval=60, publish_interval=0.2))
+    try:
+        ha.call_event({"call_id": "c1", "state": "ringing", "direction": "kiosk_to_phone"})
+        for _ in range(100):
+            if fired and "binary_sensor.kiosk_intercom_phone_102" in states:
+                break
+            await asyncio.sleep(0.05)
+        assert fired == [("kiosk_intercom_gateway_call",
+                          {"call_id": "c1", "state": "ringing", "direction": "kiosk_to_phone"})]
+        calls = states["sensor.kiosk_intercom_gateway_calls"]
+        assert calls["state"] == 1 and calls["attributes"]["calls"][0]["direction"] == "kiosk_to_phone"
+        alice = states["binary_sensor.kiosk_intercom_phone_101"]
+        assert alice["state"] == "on" and alice["attributes"]["device_class"] == "connectivity"
+        assert alice["attributes"]["found_by"] == ["Kitchen"] and alice["attributes"]["on_kiosks"]
+        assert states["binary_sensor.kiosk_intercom_phone_102"]["state"] == "off"
+        assert "binary_sensor.kiosk_intercom_phone_trunk" not in states  # not offered to kiosks
+        phones.pop(1)  # 102 unticked on the Phones card
+        for _ in range(100):
+            if "binary_sensor.kiosk_intercom_phone_102" in deleted:
+                break
+            await asyncio.sleep(0.05)
+        assert "binary_sensor.kiosk_intercom_phone_102" in deleted
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
+        await server.close()

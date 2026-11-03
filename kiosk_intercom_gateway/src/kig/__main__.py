@@ -12,6 +12,7 @@ from aiohttp import web
 from . import __version__, config
 from .ari import Ari
 from .bridge import CallManager
+from .commands import read_stdin
 from .discovery import Discovery
 from .phones import PhoneDirectory
 from .ha import HomeAssistant, save_options, supervisor_ingress_port
@@ -168,6 +169,13 @@ async def main() -> None:
                        port, err.strerror or err)
             raise SystemExit(1) from err
         _LOG.info("status page on port %d", port)
+
+        # Actions from Home Assistant (hassio.addon_stdin); its own task, so a
+        # quiet stdin never holds up shutdown.
+        actions = asyncio.ensure_future(read_stdin(calls, stop))
+        stack.callback(actions.cancel)
+        ha.calls = calls
+        calls.listeners.append(ha.call_event)
 
         jobs = [roster.run(stop), ha.run(stop)]
         if ari is not None:

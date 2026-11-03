@@ -121,6 +121,18 @@ class Ari:
             timeout=timeout,
         )
 
+    async def play(self, channel: str, media: str) -> str:
+        """Starts ``media`` (``tone:ring`` and the like) on a channel; its playback id."""
+        playback = await self.request("POST", f"/channels/{channel}/play", media=media)
+        return str((playback or {}).get("id") or "")
+
+    async def stop_playback(self, playback: str) -> None:
+        try:
+            await self.request("DELETE", f"/playbacks/{playback}")
+        except AriError as err:
+            if err.status != 404:  # finished already
+                raise
+
     async def bridge(self, *channels: str) -> str:
         b = await self.request("POST", "/bridges", type="mixing")
         await self.request("POST", f"/bridges/{b['id']}/addChannel", channel=",".join(channels))
