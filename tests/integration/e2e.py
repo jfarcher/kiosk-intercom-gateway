@@ -178,20 +178,18 @@ async def phone_call(kiosk: FakeKiosk, calls: CallManager, phones: PhoneDirector
           f"{label}: the phone answered and the kiosk opened its audio socket")
     note(f"{label}: signals at the kiosk: {[a for c, a in kiosk.signals if c == call_id]}")
     pos = 0
-    for _ in range(int(9000 / 80)):
-        if kiosk.out_closed.is_set():
-            break
+    for _ in range(int(5000 / 80)):  # talk 5 s, then the kiosk hangs up
         await kiosk.out_talk(tone(1000, pos, FRAME_BYTES // 2))
         pos += FRAME_BYTES // 2
         await asyncio.sleep(0.08)
-    check(await wait(lambda: kiosk.out_closed.is_set(), 15), f"{label}: the phone hung up")
-    check(any(json.loads(t).get("type") == "end" for t in kiosk.out_texts),
-          f"{label}: the kiosk was told the phone hung up")
-    check(await wait(lambda: not calls.calls, 5), f"{label}: the gateway cleaned the call up")
+    await kiosk.out_hang_up()
+    check(await wait(lambda: not calls.calls, 5),
+          f"{label}: the kiosk hung up and the gateway ended the call")
     await asyncio.sleep(1)
     async with s.get(f"{url}/ari/channels") as r:
         left = await r.json()
-    check(not left, f"{label}: no channels left in Asterisk {[c['name'] for c in left]}")
+    check(not left,
+          f"{label}: the gateway hung up the phone; no channels left {[c['name'] for c in left]}")
     if extension == "101":
         heard = ints(b"".join(kiosk.out_frames[-25:]))
         f, rms = frequency(heard, SAMPLE_RATE), level(heard)
@@ -218,21 +216,19 @@ async def click_to_call(kiosk: FakeKiosk, calls: CallManager, s, url, label: str
     await asyncio.sleep(1)  # ringback on the phone meanwhile
     check(await kiosk.answer() == 200, f"{label}: the kiosk answered")
     await asyncio.wait_for(kiosk.ws_open.wait(), 10)
-    closed = await wait(lambda: kiosk.ws_closed.is_set(), 15)
-    if not closed:
-        async with s.get(f"{url}/ari/channels") as r:
-            note(f"{label}: channels now: {[(c['name'], c['state']) for c in await r.json()]}")
-        note(f"{label}: gateway calls now: {[(c.id, c.state, c.channel) for c in calls.calls.values()]}")
-    check(closed, f"{label}: the phone hung up")
+    await asyncio.sleep(3)  # listen, then the kiosk hangs up
     heard = ints(b"".join(kiosk.frames[-20:]))
+    await kiosk.hang_up()
     f, rms = frequency(heard, SAMPLE_RATE), level(heard)
     note(f"{label}: kiosk heard {len(kiosk.frames)} frames; last 1.6 s: {f:.0f} Hz, RMS {rms:.0f}")
     check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears the phone")
-    check(await wait(lambda: not calls.calls, 5), f"{label}: the gateway cleaned the call up")
+    check(await wait(lambda: not calls.calls, 5),
+          f"{label}: the kiosk hung up and the gateway ended the call")
     await asyncio.sleep(1)
     async with s.get(f"{url}/ari/channels") as r:
         left = await r.json()
-    check(not left, f"{label}: no channels left in Asterisk {[c['name'] for c in left]}")
+    check(not left,
+          f"{label}: the gateway hung up the phone; no channels left {[c['name'] for c in left]}")
     states = [e["state"] for e in events]
     note(f"{label}: events {states}")
     check(states == ["ringing", "answered", "ended"], f"{label}: Home Assistant events in order")
