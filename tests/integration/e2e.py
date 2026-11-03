@@ -222,6 +222,8 @@ async def click_to_call(kiosk: FakeKiosk, calls: CallManager, s, url, label: str
     f, rms = frequency(heard, SAMPLE_RATE), level(heard)
     note(f"{label}: kiosk heard {len(kiosk.frames)} frames; last 1.6 s: {f:.0f} Hz, RMS {rms:.0f}")
     check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears the phone")
+    check(len(kiosk.frames) >= 25,
+          f"{label}: audio flows at once after answering ({len(kiosk.frames)} of ~37 frames in 3 s)")
     check(await wait(lambda: not calls.calls, 5),
           f"{label}: the kiosk hung up and the gateway ended the call")
     await asyncio.sleep(1)

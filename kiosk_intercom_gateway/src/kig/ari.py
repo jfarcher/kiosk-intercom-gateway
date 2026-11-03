@@ -121,9 +121,13 @@ class Ari:
             timeout=timeout,
         )
 
-    async def play(self, channel: str, media: str) -> str:
-        """Starts ``media`` (``tone:ring`` and the like) on a channel; its playback id."""
-        playback = await self.request("POST", f"/channels/{channel}/play", media=media)
+    async def play_to_bridge(self, bridge: str, media: str) -> str:
+        """Starts ``media`` (``tone:ring`` and the like) in a bridge; its playback id.
+
+        Into the bridge, not on a channel: a channel's own playback holds up
+        every later command for that channel (joining a bridge included) in
+        its Stasis control queue until the playback ends."""
+        playback = await self.request("POST", f"/bridges/{bridge}/play", media=media)
         return str((playback or {}).get("id") or "")
 
     async def stop_playback(self, playback: str) -> None:
@@ -135,8 +139,11 @@ class Ari:
 
     async def bridge(self, *channels: str) -> str:
         b = await self.request("POST", "/bridges", type="mixing")
-        await self.request("POST", f"/bridges/{b['id']}/addChannel", channel=",".join(channels))
+        await self.add_to_bridge(str(b["id"]), *channels)
         return str(b["id"])
+
+    async def add_to_bridge(self, bridge: str, *channels: str) -> None:
+        await self.request("POST", f"/bridges/{bridge}/addChannel", channel=",".join(channels))
 
     async def destroy_bridge(self, bridge: str) -> None:
         try:

@@ -59,13 +59,19 @@ async def test_call_action_rings_the_phone_then_the_kiosk(rig, events):  # noqa:
     await until(lambda: rig.kiosk.calls, what="the kiosk to ring")
     frm = rig.kiosk.calls[rig.kiosk.last_call()]["from"]
     assert frm["name"] == "Alice (101)" and frm["id"] == alice(rig).id  # shows the phone, can call back
-    plays = rig.fake_ari.calls_to("POST", f"/channels/{o['id']}/play")
-    assert plays and plays[0]["media"] == "tone:ring"  # the phone hears ringback meanwhile
+    plays = rig.fake_ari.calls_to("POST", "/bridges/bridge-1/play")
+    assert plays and plays[0]["media"] == "tone:ring"  # the phone hears ringback meanwhile, in its bridge
+    assert rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")[0]["channel"] == o["id"]
+    assert not rig.fake_ari.calls_to("POST", f"/channels/{o['id']}/play")  # never on the channel
 
     await rig.kiosk.answer()
     await asyncio.wait_for(rig.kiosk.ws_open.wait(), 3)
     await until(lambda: rig.fake_ari.calls_to("DELETE", "/playbacks/"), what="ringback stopped")
-    assert rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")
+    await until(lambda: len(rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")) == 2,
+                what="the kiosk's audio joining the same bridge")
+    assert rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")[1]["channel"].startswith("ext-")
+    created = [q for q in rig.fake_ari.calls_to("POST", "/bridges") if q.get("type") == "mixing"]
+    assert len(created) == 1  # one bridge, not a second
 
 
 @pytest.mark.parametrize("command,error", [

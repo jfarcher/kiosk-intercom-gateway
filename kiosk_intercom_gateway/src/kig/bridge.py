@@ -366,8 +366,12 @@ class CallManager:
         self.calls[c.id] = c
         self.by_channel[channel] = c
         try:
-            if answered:  # a phone that picked up a call action: ringback until the kiosk answers
-                c.ringback = await self.ari.play(channel, "tone:ring")
+            if answered:
+                # A phone that picked up a call action hears ringback until the
+                # kiosk answers: played into its call bridge, which the kiosk's
+                # audio joins later (see Ari.play_to_bridge for why not the channel).
+                c.bridge = await self.ari.bridge(channel)
+                c.ringback = await self.ari.play_to_bridge(c.bridge, "tone:ring")
             else:
                 await self.ari.ring(channel)
         except AriError as err:
@@ -427,7 +431,10 @@ class CallManager:
         c.ext_channel = str(ext["id"])
         self.ext_channels[c.ext_channel] = c
         await asyncio.wait_for(c.media.connected.wait(), 5)
-        c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
+        if c.bridge:  # the call action's bridge, already holding the phone
+            await self.ari.add_to_bridge(c.bridge, c.ext_channel)
+        else:
+            c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
 
     def _go_live(self, c: Call) -> None:
         c.state, c.answered = "in_call", time.time()
