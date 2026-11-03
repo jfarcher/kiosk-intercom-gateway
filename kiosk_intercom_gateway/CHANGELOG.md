@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- **Call events.** `kiosk_intercom_gateway_call` fires as every call rings, is answered and ends.
+  It carries the direction, kiosk, phone, why the call ended and how long it lasted, so automations
+  can react to missed calls, a door station ringing, and so on.
+- **Actions** through `hassio.addon_stdin`. `call` rings a phone and, once it's picked up, a kiosk
+  (click to call, with ringback while the kiosk rings). `hangup` ends a kiosk's, a phone's or every
+  call.
+- **Sensors:** `sensor.kiosk_intercom_gateway_calls` for live calls, and
+  `binary_sensor.kiosk_intercom_phone_<extension>` for each offered phone's registration.
+- The status page has a **Use calls in automations** card with ready-to-copy YAML, filled in with
+  this app's slug and your kiosks and phones.
+
 ## 0.3.1
 
 - Fix phones vanishing from the kiosks after **Save** on the Phones card. Changing a phone

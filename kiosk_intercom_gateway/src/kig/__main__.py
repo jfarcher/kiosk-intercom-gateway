@@ -15,7 +15,7 @@ from .bridge import CallManager
 from .commands import read_stdin
 from .discovery import Discovery
 from .phones import PhoneDirectory
-from .ha import HomeAssistant, save_options, supervisor_ingress_port
+from .ha import SELF_INFO, HomeAssistant, save_options, supervisor_ingress_port
 from .probe import HttpProber
 from .roster import Roster
 from .state import State
@@ -118,6 +118,7 @@ async def main() -> None:
                 "key_fingerprint": roster.key_fingerprint,
                 "discovery": cfg.mdns,
                 "home_assistant": ha.available,
+                "slug": SELF_INFO.get("slug", ""),
                 "phones_auto": phones.auto if phones else True,
                 "phones_enabled": phones is not None,
                 "asterisk": {**calls.status(), "ari_url": cfg.ari_url, "username": cfg.ari_username,

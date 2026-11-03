@@ -36,18 +36,30 @@ PHONE_ENTITY = "binary_sensor.kiosk_intercom_phone_{slug}"
 SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "version")
 
 
+SELF_INFO: dict[str, Any] = {}  # the Supervisor's /addons/self/info, once read
+
+
+async def supervisor_self_info(
+    token: str | None = None, url: str = "http://supervisor/addons/self/info"
+) -> dict[str, Any]:
+    """This app as the Supervisor sees it (slug, ingress port, …); {} outside it."""
+    token = token or supervisor_token()
+    if not token:
+        return {}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+        async with s.get(url, headers={"Authorization": f"Bearer {token}"}) as r:
+            r.raise_for_status()
+            data = (await r.json())["data"]
+    SELF_INFO.update(data if isinstance(data, dict) else {})
+    return SELF_INFO
+
+
 async def supervisor_ingress_port(
     token: str | None = None, url: str = "http://supervisor/addons/self/info"
 ) -> int | None:
     """The host port the Supervisor assigned this app for ingress
     (``ingress_port: 0``), or None outside the Supervisor."""
-    token = token or supervisor_token()
-    if not token:
-        return None
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-        async with s.get(url, headers={"Authorization": f"Bearer {token}"}) as r:
-            r.raise_for_status()
-            port = (await r.json())["data"]["ingress_port"]
+    port = (await supervisor_self_info(token, url)).get("ingress_port")
     return int(port) if port else None
 
 

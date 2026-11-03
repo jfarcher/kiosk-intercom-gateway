@@ -3,8 +3,9 @@
 A Home Assistant app that joins the [Kiosk Satellite](https://github.com/jxlarrea/kiosk-satellite)
 intercom from the outside, connecting the kiosks and the SIP phones on Asterisk both ways.
 
-**Status: 0.3.0.** Dial a kiosk's extension and it rings like an intercom call. Pick a phone in a
+**Status: 0.4.0.** Dial a kiosk's extension and it rings like an intercom call. Pick a phone in a
 kiosk's Call list and it rings through Asterisk. Audio is two-way 16 kHz in both directions.
+Calls fire Home Assistant events, can be started and ended from automations, and show as sensors.
 
 ## What it does
 
@@ -29,6 +30,9 @@ kiosk's Call list and it rings through Asterisk. Audio is two-way 16 kHz in both
   announce themselves, with its own port and intercom identity, so it appears in every kiosk's
   **Call a kiosk** list. The gateway rings it with ARI `originate`. A phone stays listed while
   it is registered, and the status page picks which phones are offered.
+- **Works with automations:** a `kiosk_intercom_gateway_call` event on every ring, answer and hang-up;
+  `call` (phone first, then kiosk) and `hangup` actions through `hassio.addon_stdin`; a calls sensor
+  and a registration sensor per phone.
 - **Matches kiosks to Home Assistant** through their ESPHome devices, which adds each kiosk's
   area and HA's `Intercom` call state (best effort, by name).
 - **Shows it all** on an ingress page (sidebar: *Kiosk Intercom*): kiosks, extensions, the
@@ -101,8 +105,9 @@ clean-up afterwards.
 1. Discovery and roster. Done in 0.1.
 2. SIP → kiosk calls. Done in 0.2.
 3. Kiosk → SIP calls. Done in 0.3.
-4. **Announce to all** from a phone, and HA entities and actions for the gateway's calls.
-5. HTTPS/WSS for kiosks with **Encrypt communications**.
+4. Home Assistant events, actions and sensors. Done in 0.4.
+5. **Announce to all** from a phone.
+6. HTTPS/WSS for kiosks with **Encrypt communications**.
 
 ## Related work
 

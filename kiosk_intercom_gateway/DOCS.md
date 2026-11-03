@@ -100,6 +100,94 @@ way, with a port of its own. Kiosks therefore need to hear the gateway's mDNS, w
 same requirement as for hearing each other. Their Remote Administration switcher lists these
 phones too. Opening one there shows a page explaining what it is.
 
+## Automations
+
+The status page's **Use calls in automations** card has these examples with this app's slug and your
+kiosk and phone names filled in.
+
+### Events
+
+Every call fires `kiosk_intercom_gateway_call` as it rings, is answered and ends:
+
+| Field | Value |
+| --- | --- |
+| `state` | `ringing`, `answered` or `ended` |
+| `direction` | `phone_to_kiosk` or `kiosk_to_phone` |
+| `kiosk`, `kiosk_id`, `kiosk_extension` | The kiosk: *Kitchen*, its id, *801* |
+| `phone`, `phone_number` | The SIP side: *Alice (101)*, *101* (for a door station, whatever its caller ID says) |
+| `reason` (ended) | `ended`, `declined`, `busy`, `dnd`, `no_answer`, `unavailable`, `unknown_kiosk`, `failed` |
+| `duration` (ended) | Seconds talked, 0 if never answered |
+| `call_id` | The same for all three events of a call |
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: kiosk_intercom_gateway_call
+    event_data:
+      state: ended
+      reason: no_answer
+actions:
+  - action: persistent_notification.create
+    data:
+      message: "Missed: {{ trigger.event.data.phone }} and {{ trigger.event.data.kiosk }}"
+```
+
+### Actions
+
+Apps take actions through `hassio.addon_stdin`. Use this app's slug, shown on the card and in the
+app's address in Settings → Apps.
+
+**Ring a phone, then a kiosk** (click to call). The phone rings showing the kiosk. Once it's picked
+up, the phone hears ringback while the kiosk rings, showing the phone:
+
+```yaml
+action: hassio.addon_stdin
+data:
+  addon: <slug>
+  input:
+    action: call
+    phone: "101"
+    kiosk: Kitchen        # a kiosk's name or extension
+```
+
+**Hang up** a kiosk's calls, a phone's calls (`phone: "101"`), one call (`call: <call_id>`), or every
+call (nothing named):
+
+```yaml
+action: hassio.addon_stdin
+data:
+  addon: <slug>
+  input:
+    action: hangup
+    kiosk: Kitchen
+```
+
+**A kiosk calls a phone** with the kiosk's own ESPHome action, the phone named as it appears in the
+kiosks' list:
+
+```yaml
+action: esphome.<kiosk node>_intercom_call
+data:
+  kiosk: "Alice (101)"
+```
+
+From the Asterisk dialplan, a kiosk is `Local/<extension>@default`, for example
+`Dial(PJSIP/1001&Local/801@default,30)` to ring a desk phone and the kitchen kiosk together.
+`DIALSTATUS` reports BUSY, NOANSWER or CONGESTION as usual.
+
+A failed action, such as an unknown kiosk or Asterisk not connected, logs a warning in this app's log.
+
+### Sensors
+
+| Entity | State | Attributes |
+| --- | --- | --- |
+| `sensor.kiosk_intercom_gateway_kiosks` | Ready kiosks | Every kiosk: name, extension, status, area… |
+| `sensor.kiosk_intercom_gateway_calls` | Live calls | Each: direction, state, kiosk, phone, since |
+| `binary_sensor.kiosk_intercom_phone_<extension>` | On while registered | on_kiosks, busy, found_by |
+
+These are set by the app, so they have no settings page in Home Assistant. They come back within a
+minute of Home Assistant restarting.
+
 ## Options
 
 | Option | Meaning |

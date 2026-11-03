@@ -236,7 +236,9 @@ async def main(url: str, user: str, password: str) -> None:
 
     async with aiohttp.ClientSession(auth=aiohttp.BasicAuth(user, password)) as s:
         await one_call(s, url, kiosk, calls, "kig-ci-tone", "call 1 (phone → kiosk)")
+        flush_report()  # one annotation per call: GitHub cuts long ones
         await one_call(s, url, kiosk, calls, "kig-ci-rec", "call 2 (phone → kiosk, recorded)")
+        flush_report()  # one annotation per call: GitHub cuts long ones
 
         phones = PhoneDirectory(
             ari, roster, calls.state, None,
@@ -253,8 +255,11 @@ async def main(url: str, user: str, password: str) -> None:
               "the test phones 101 and 102 are offered to kiosks")
         check(phones.phones["101"].label == "CI Tone Phone (101)", "phones are named by their caller ID")
         await phone_call(kiosk, calls, phones, s, url, "101", "call 3 (kiosk → phone 101)")
+        flush_report()  # one annotation per call: GitHub cuts long ones
         await phone_call(kiosk, calls, phones, s, url, "102", "call 4 (kiosk → phone 102, recorded)")
+        flush_report()  # one annotation per call: GitHub cuts long ones
         await click_to_call(kiosk, calls, s, url, "call 5 (the call action: phone 101, then the kiosk)")
+        flush_report()  # one annotation per call: GitHub cuts long ones
         await phones.close()
     flush_report()
 

@@ -39,6 +39,12 @@ jobs:
           docker logs kig 2>&1 | tee kig.log
           grep -q "status page on port 8099" kig.log
           ! grep -q "no Supervisor token" kig.log
+      - name: Actions reach the app on stdin (as hassio.addon_stdin sends them)
+        run: |
+          (sleep 4; echo '{"action": "hangup"}'; sleep 3) \
+            | timeout 15 docker run -i --rm -e KIG_PORT=8098 -e KIG_KEY=test kiosk-intercom-gateway:test \
+            2>&1 | tee stdin.log || true
+          grep -q "hangup action: 0 calls ended" stdin.log
 
   asterisk:
     # A real call through the Home Assistant Asterisk app's own image.

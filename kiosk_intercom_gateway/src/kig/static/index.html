@@ -104,6 +104,7 @@
   </div>
   <div class="card" id="asterisk">Loading…</div>
   <div class="card" id="phones" hidden></div>
+  <div class="card" id="automations" hidden></div>
   <div class="list" id="list"></div>
 </main>
 <script>
@@ -274,6 +275,39 @@ async function savePhones(body) {
   }
 }
 
+let autoOpen = false;
+function renderAutomations(g, kiosks) {
+  const a = g.asterisk || {}, card = $("automations");
+  if (!g.home_assistant) { card.hidden = true; return; }
+  card.hidden = false;
+  const slug = g.slug || "YOUR_APP_SLUG";
+  const kiosk = (kiosks.find((k) => k.status === "ready") || kiosks[0] || {name: "Kitchen"}).name;
+  const phone = ((a.phones || []).find((p) => p.offered) || {extension: "101", name: "Alice (101)"});
+  const trigger = `triggers:\n  - trigger: event\n    event_type: kiosk_intercom_gateway_call\n    event_data:\n` +
+    `      state: ended\n      reason: no_answer\nactions:\n  - action: persistent_notification.create\n` +
+    `    data:\n      message: >-\n        Missed: {{ trigger.event.data.phone }} and\n` +
+    `        {{ trigger.event.data.kiosk }}\n`;
+  const call = `action: hassio.addon_stdin\ndata:\n  addon: ${slug}\n  input:\n    action: call\n` +
+    `    phone: "${phone.extension}"\n    kiosk: ${kiosk}\n`;
+  const hangup = `action: hassio.addon_stdin\ndata:\n  addon: ${slug}\n  input:\n    action: hangup\n    kiosk: ${kiosk}\n`;
+  const kioskCalls = `action: esphome.KIOSK_NODE_intercom_call\ndata:\n  kiosk: "${phone.name}"\n`;
+  card.innerHTML = `
+    <details id="autodetails" ${autoOpen ? "open" : ""}><summary>Use calls in automations</summary>
+    <ol class="steps">
+      <li><b>React to calls.</b> Every call fires <code>kiosk_intercom_gateway_call</code> as it rings, is
+          answered and ends, with <code>direction</code>, <code>kiosk</code>, <code>phone</code>,
+          <code>phone_number</code>, <code>reason</code> and <code>duration</code>. A missed call:${snip("trigger", trigger)}</li>
+      <li><b>Ring a phone, then a kiosk</b> (click to call): the phone rings showing the kiosk; when it is
+          picked up, the kiosk rings showing the phone.${snip("call", call)}</li>
+      <li><b>Hang up</b> a kiosk's call (or <code>phone:</code>, or nothing for every call):${snip("hangup", hangup)}</li>
+      <li><b>A kiosk calls a phone</b> with the kiosk's own ESPHome action, the phone named as on the
+          kiosks' list:${snip("kioskcalls", kioskCalls)}</li>
+      <li><b>Sensors:</b> <code>sensor.kiosk_intercom_gateway_calls</code> (live calls) and a
+          <code>binary_sensor.kiosk_intercom_phone_&lt;extension&gt;</code> per phone (registered).</li>
+    </ol></details>`;
+  $("autodetails").ontoggle = (e) => { autoOpen = e.target.open; };
+}
+
 async function load() {
   try {
     const res = await fetch("api/kiosks", {cache: "no-store"});
@@ -294,6 +328,7 @@ async function load() {
     $("probe").onclick = async () => { await fetch("api/probe", {method: "POST"}); setTimeout(load, 1500); };
     if (g.asterisk) renderAsterisk(g.asterisk);
     if (g.asterisk) renderPhones(g);
+    renderAutomations(g, ks);
     $("list").innerHTML = ks.length ? ks.map((k) => `
       <div class="k">
         <span class="name">${k.extension ? `<span class="ext">${esc(k.extension)}</span>` : ""}${esc(k.name)}</span>
