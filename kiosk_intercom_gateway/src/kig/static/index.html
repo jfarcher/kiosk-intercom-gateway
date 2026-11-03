@@ -68,6 +68,20 @@
   .ext { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--accent); margin-right: 8px; }
   .calls { margin-top: 8px; display: grid; gap: 4px; font-size: 14px; }
   .calls .live { color: var(--ok); font-weight: 600; }
+  .phones { margin-top: 10px; display: grid; gap: 6px; }
+  .phone { display: grid; grid-template-columns: auto auto 1fr auto; gap: 6px 10px; align-items: center;
+           padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+  .phone.off { opacity: .65; }
+  .phone input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
+  .phone input[type=text] { min-width: 0; font: inherit; color: var(--fg); background: var(--bg);
+                            border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+  .phone input[type=text]:focus { outline: none; border-color: var(--accent); }
+  .phone .note { grid-column: 3 / -1; color: var(--muted); font-size: 12px; }
+  .state { font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .state.online { color: var(--ok); } .state.offline { color: var(--idle); } .state.unknown { color: var(--warn); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+  @media (max-width: 520px) { .phone { grid-template-columns: auto auto 1fr; }
+    .phone .state { grid-column: 3; justify-self: start; } }
 </style>
 </head>
 <body>
@@ -89,6 +103,7 @@
     <div class="msg" id="keymsg"></div>
   </div>
   <div class="card" id="asterisk">Loading…</div>
+  <div class="card" id="phones" hidden></div>
   <div class="list" id="list"></div>
 </main>
 <script>
@@ -156,15 +171,21 @@ function renderAsterisk(a) {
   const dot = ok ? "ok" : configured ? "bad" : "warn";
   const state = ok ? `Connected to Asterisk ${esc(a.asterisk_version)}`
     : configured ? `Not connected: ${esc(a.error || "connecting…")}` : "SIP calls are off: no ARI user set";
+  const kioskName = (c) => esc(c.kiosk || "?") + (c.extension ? " (" + esc(c.extension) + ")" : "");
+  const who = (c) => c.direction === "out" ? `${kioskName(c)} → ${esc(c.caller)}`
+                                           : `${esc(c.caller || "A caller")} → ${kioskName(c)}`;
   const live = a.calls.map((c) => `<div><span class="live">● ${esc(c.state === "in_call" ? "In call" :
-      c.state === "ringing" ? "Ringing" : "Connecting")}</span> ${esc(c.caller)} → ${esc(c.kiosk)}` +
-      `${c.extension ? " (" + esc(c.extension) + ")" : ""} · ${since(c.since)}</div>`).join("");
-  const recent = a.history.slice(-5).reverse().map((c) => `<div class="line">${esc(c.caller || "A caller")} → ` +
-      `${esc(c.kiosk || "?")}: ${esc(ENDED[c.reason] || c.reason)} · ${ago(c.at)}</div>`).join("");
+      c.state === "ringing" ? "Ringing" : "Connecting")}</span> ${who(c)} · ${since(c.since)}</div>`).join("");
+  const recent = a.history.slice(-5).reverse().map((c) => `<div class="line">${who(c)}: ` +
+      `${esc(ENDED[c.reason] || c.reason)} · ${ago(c.at)}</div>`).join("");
   const user = a.username || "kiosk-gateway", app = a.app || "kiosk-intercom", pat = pattern(a.extension_start);
   const ari = `[general]\nenabled = yes\n\n[${user}]\ntype = user\nread_only = no\npassword = CHOOSE-A-PASSWORD\n`;
-  const ext = `; Kiosk intercom: ${pat.slice(1)} rings a kiosk through Kiosk Intercom Gateway.\n` +
+  const lines = `; Kiosk intercom: ${pat.slice(1)} rings a kiosk through Kiosk Intercom Gateway.\n` +
     `exten => ${pat},1,NoOp(Kiosk intercom)\n same => n,Stasis(${app},\${EXTEN})\n same => n,Hangup()\n`;
+  // The Asterisk app's own default dialplan with the kiosk lines in place.
+  const ext = `[general]\nstatic=yes\n\n[default]\ninclude => parkedcalls\nexten => 444,1,Park(,s)\n` +
+    `exten => 555,1,ParkedCall(default,701)\n${lines}exten => _X!,1,Dial(\${PJSIP_DIAL_CONTACTS(\${EXTEN})})\n\n` +
+    `[parkedcallstimeout]\nexten => s,1,Hangup()\n`;
   if (setupOpen === null) setupOpen = !ok;
   const dir = "/addon_configs/b35499aa_asterisk/asterisk";
   $("asterisk").innerHTML = `
@@ -175,14 +196,80 @@ function renderAsterisk(a) {
     <ol class="steps">
       <li>Install the <b>Asterisk</b> app (TECH7Fox) and start it once, so it creates its config folders.</li>
       <li>Create <code>${dir}/custom/ari.conf</code> (with the File editor or Samba app):${snip("ari", ari)}</li>
-      <li>Copy <code>${dir}/default/extensions.conf</code> to <code>${dir}/custom/extensions.conf</code> and add these
-          lines in its <code>[default]</code> section, above the <code>_X!</code> line:${snip("ext", ext)}</li>
+      <li>Create <code>${dir}/custom/extensions.conf</code> with this: the Asterisk app's default dialplan with
+          the kiosk lines in place.${snip("ext", ext)}
+          <div class="line">Already have your own <code>custom/extensions.conf</code>? Add just these lines inside
+          its <code>[default]</code> section, above the <code>_X!</code> line:</div>${snip("lines", lines)}</li>
       <li>Restart the Asterisk app.</li>
       <li>In this app's <b>Configuration</b>, set <b>ARI username</b> to <code>${esc(user)}</code> and
           <b>ARI password</b> to the password you chose, save and restart.</li>
-      <li>Dial a kiosk's extension from any phone on Asterisk. The numbers are listed below.</li>
+      <li>Dial a kiosk's extension from any phone on Asterisk. The numbers are listed below, and the phones
+          kiosks can call are under <b>Phones</b>.</li>
     </ol></details>`;
   $("setup").ontoggle = (e) => { setupOpen = e.target.open; };
+}
+
+let phonesDirty = false, phonesMsg = "";
+const STATE = {online: "Registered", offline: "Not registered", unknown: "Unknown"};
+
+function renderPhones(g) {
+  const card = $("phones"), a = g.asterisk || {};
+  if (phonesDirty) return; // keep what is being edited
+  card.hidden = false;
+  if (!g.phones_enabled || !a.connected) {
+    card.innerHTML = `<h2>Phones</h2><div class="line">${!g.phones_enabled
+      ? "Kiosks calling phones is off: it needs Asterisk set up (above) and <b>Kiosks can call phones</b> on."
+      : "Phones are listed once Asterisk is connected."}</div>`;
+    return;
+  }
+  const list = a.phones || [];
+  const offered = list.filter((p) => p.offered).length;
+  const rows = list.map((p) => `
+    <label class="phone ${p.state === "offline" ? "off" : ""}">
+      <input type="checkbox" data-ext="${esc(p.extension)}" ${p.selected ? "checked" : ""}
+             aria-label="Offer ${esc(p.extension)} to kiosks">
+      <span class="ext">${esc(p.extension)}</span>
+      <input type="text" data-name="${esc(p.extension)}" value="${esc(p.custom_name)}"
+             placeholder="${esc(p.callerid || "Phone " + p.extension)}" aria-label="Name for ${esc(p.extension)}">
+      <span class="state ${esc(p.state)}">${esc(STATE[p.state] || p.state)}${p.busy ? " · in a call" : ""}</span>
+      ${p.selected && !p.offered ? `<span class="note">Shows on kiosks once it registers.</span>` : ""}
+    </label>`).join("");
+  card.innerHTML = `
+    <h2>Phones kiosks can call</h2>
+    <div class="line">${offered} on the kiosks' <b>Call a kiosk</b> list ·
+      ${g.phones_auto ? "automatic: every numbered extension" : "your chosen list"}.
+      Untick a phone to hide it; a name replaces its caller ID on the kiosks.</div>
+    ${list.length ? `<div class="phones" id="phonelist">${rows}</div>`
+                  : `<div class="line">Asterisk has no phones yet.</div>`}
+    <div class="actions">
+      <button type="button" class="primary" id="phonesave" hidden>Save</button>
+      <button type="button" id="phonecancel" hidden>Cancel</button>
+      ${g.phones_auto ? "" : `<button type="button" id="phoneauto">Back to automatic</button>`}
+      <span class="msg" id="phonemsg">${esc(phonesMsg)}</span>
+    </div>`;
+  const dirty = () => { phonesDirty = true; $("phonesave").hidden = false; $("phonecancel").hidden = false;
+                        $("phonemsg").textContent = ""; };
+  card.querySelectorAll("input").forEach((i) => i.addEventListener("input", dirty));
+  $("phonecancel").onclick = () => { phonesDirty = false; phonesMsg = ""; load(); };
+  $("phonesave").onclick = () => savePhones({phones: [...card.querySelectorAll("input[data-ext]:checked")].map(
+    (c) => ({extension: c.dataset.ext, name: card.querySelector(`input[data-name="${CSS.escape(c.dataset.ext)}"]`).value}))});
+  if ($("phoneauto")) $("phoneauto").onclick = () => savePhones({auto: true});
+}
+
+async function savePhones(body) {
+  const msg = $("phonemsg");
+  msg.className = "msg"; msg.textContent = "Saving…";
+  try {
+    const res = await fetch("api/phones", {method: "POST", headers: {"content-type": "application/json"},
+                                           body: JSON.stringify(body)});
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "HTTP " + res.status);
+    phonesDirty = false;
+    phonesMsg = data.saved ? "Saved. Kiosks see the change within a few seconds." : data.note;
+    await load();
+  } catch (err) {
+    msg.className = "msg err"; msg.textContent = "Not saved: " + err.message;
+  }
 }
 
 async function load() {
@@ -204,6 +291,7 @@ async function load() {
     if ($("changekey")) $("changekey").onclick = () => { keyOpen = true; showKeyCard(); $("keyinput").focus(); };
     $("probe").onclick = async () => { await fetch("api/probe", {method: "POST"}); setTimeout(load, 1500); };
     if (g.asterisk) renderAsterisk(g.asterisk);
+    if (g.asterisk) renderPhones(g);
     $("list").innerHTML = ks.length ? ks.map((k) => `
       <div class="k">
         <span class="name">${k.extension ? `<span class="ext">${esc(k.extension)}</span>` : ""}${esc(k.name)}</span>

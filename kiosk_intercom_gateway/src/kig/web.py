@@ -20,6 +20,7 @@ def make_app(
     ingress_only: bool = True,
     on_probe: Callable[[], Any] | None = None,
     set_key: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+    set_phones: Callable[[list[str] | None], Awaitable[dict[str, Any]]] | None = None,
 ) -> web.Application:
     @web.middleware
     async def only_ingress(request: web.Request, handler: Any) -> web.StreamResponse:
@@ -60,7 +61,29 @@ def make_app(
             return web.json_response({"ok": False, "error": "Not available."}, status=501)
         return web.json_response(await set_key(value.strip()))
 
+    async def phones(request: web.Request) -> web.Response:
+        """``{"auto": true}`` or ``{"phones": [{"extension", "name"}]}``."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or set_phones is None:
+            return web.json_response({"ok": False, "error": "Not available."}, status=400)
+        if body.get("auto"):
+            return web.json_response(await set_phones(None))
+        entries = []
+        for item in body.get("phones") or []:
+            ext = str((item or {}).get("extension") or "").strip()
+            name = " ".join(str((item or {}).get("name") or "").split())[:60]
+            if not ext or any(c in ext for c in "=: ") or "=" in name:
+                return web.json_response({"ok": False, "error": f"Not a valid phone: {ext!r}"}, status=400)
+            entries.append(f"{ext}={name}" if name else ext)
+        if len(entries) > 200:
+            return web.json_response({"ok": False, "error": "Too many phones."}, status=400)
+        return web.json_response(await set_phones(entries))
+
     app = web.Application(middlewares=[only_ingress])
+    app.router.add_post("/api/phones", phones)
     app.router.add_post("/api/key", key)
     app.router.add_get("/", page)
     app.router.add_get("/api/kiosks", kiosks)

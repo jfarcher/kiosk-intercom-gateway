@@ -1,10 +1,10 @@
 # Kiosk Intercom Gateway
 
 A Home Assistant app that joins the [Kiosk Satellite](https://github.com/jxlarrea/kiosk-satellite)
-intercom from the outside, so SIP phones on Asterisk can call the kiosks.
+intercom from the outside, connecting the kiosks and the SIP phones on Asterisk both ways.
 
-**Status: 0.2.0.** Dial a kiosk's extension and it rings like an intercom call, with
-two-way 16 kHz audio. Kiosks calling SIP phones comes next.
+**Status: 0.3.0.** Dial a kiosk's extension and it rings like an intercom call. Pick a phone in a
+kiosk's Call list and it rings through Asterisk. Audio is two-way 16 kHz in both directions.
 
 ## What it does
 
@@ -25,6 +25,10 @@ two-way 16 kHz audio. Kiosks calling SIP phones comes next.
   ARI rings the kiosk with the caller's name. The kiosk's own Ring / Auto / DND rules apply,
   and on answer the gateway bridges the audio. Declines, busy kiosks and timeouts reach the
   caller as the matching SIP cause.
+- **Offers Asterisk's phones to the kiosks.** Each phone is announced over mDNS the way kiosks
+  announce themselves, with its own port and intercom identity, so it appears in every kiosk's
+  **Call a kiosk** list. The gateway rings it with ARI `originate`. A phone stays listed while
+  it is registered, and the status page picks which phones are offered.
 - **Matches kiosks to Home Assistant** through their ESPHome devices, which adds each kiosk's
   area and HA's `Intercom` call state (best effort, by name).
 - **Shows it all** on an ingress page (sidebar: *Kiosk Intercom*): kiosks, extensions, the
@@ -81,16 +85,22 @@ type 118) but drops it on receive: dynamic payload types need a receive mapping 
 never sets up. AudioSocket carries slin16 both ways (kind `0x12`, Asterisk 20.13 / 21.8 /
 22.3 and later) in the kiosks' own byte order.
 
+A kiosk calling a phone runs the same wire with the roles swapped. The kiosk POSTs the call to
+the phone's own port, the gateway originates `PJSIP/<ext>` with `appArgs kig-out,<call id>`, and
+on answer the gateway bridges AudioSocket and signals `answer`. The kiosk then opens its audio
+WebSocket to the phone's port. The gateway re-sends each phone's PTR, SRV, TXT and A records in
+one packet every 30 s, because kiosks drop a peer after three missed announcements.
+
 CI places real calls through the Asterisk app's own image
-(`ghcr.io/tech7fox/asterisk-hass-addon`) into a simulated kiosk, and checks the audio in both
-directions and the clean-up afterwards.
+(`ghcr.io/tech7fox/asterisk-hass-addon`), both into a simulated kiosk and from it to two PJSIP
+test phones that Asterisk answers itself. It checks the audio in both directions and the
+clean-up afterwards.
 
 ## Roadmap
 
 1. Discovery and roster. Done in 0.1.
 2. SIP → kiosk calls. Done in 0.2.
-3. **Kiosk → SIP:** SIP destinations advertised over mDNS so they appear in each kiosk's
-   Call list, and calls from them dialled through Asterisk.
+3. Kiosk → SIP calls. Done in 0.3.
 4. **Announce to all** from a phone, and HA entities and actions for the gateway's calls.
 5. HTTPS/WSS for kiosks with **Encrypt communications**.
 

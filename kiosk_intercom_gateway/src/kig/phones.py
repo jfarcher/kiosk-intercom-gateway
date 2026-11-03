@@ -112,7 +112,8 @@ class PhoneDirectory:
         self.configured = parse_phones(configured or [])
         self.advertise_address = advertise_address
         self.listen_host = listen_host
-        self.phones: dict[str, Phone] = {}
+        self.phones: dict[str, Phone] = {}  # the ones offered (or, offline, wanted)
+        self.endpoints: dict[str, dict[str, Any]] = {}  # every endpoint Asterisk has
         self._names: dict[str, str] = {}
         self.error = ""
 
@@ -124,8 +125,38 @@ class PhoneDirectory:
                 return p
         return None
 
+    @property
+    def auto(self) -> bool:
+        """No list chosen: every numbered extension is offered."""
+        return not self.configured
+
+    def selected(self, resource: str) -> bool:
+        return resource in self.configured if self.configured else bool(AUTO_RESOURCE.match(resource))
+
     def snapshot(self) -> list[dict[str, Any]]:
-        return [p.to_json() for p in sorted(self.phones.values(), key=lambda p: p.resource)]
+        """Every endpoint, for the page's Phones card, offered ones marked."""
+        out = []
+        for resource, e in sorted(self.endpoints.items()):
+            p = self.phones.get(resource)
+            out.append({
+                "extension": resource,
+                "name": p.label if p else e.get("callerid") or resource,
+                "callerid": e.get("callerid", ""),
+                "custom_name": self.configured.get(resource, ""),
+                "state": e.get("state", "unknown"),
+                "busy": bool(e.get("channel_ids")),
+                "selected": self.selected(resource),
+                "offered": bool(p and p.runner is not None),
+                "port": p.port if p else 0,
+            })
+        return out
+
+    async def choose(self, entries: list[str] | None) -> list[str]:
+        """New selection from the page: ``None`` for automatic, else entries as
+        the ``phones`` option takes them. Applied at once; returns them."""
+        self.configured = parse_phones(entries or [])
+        await self.refresh()
+        return [f"{r}={n}" if n else r for r, n in self.configured.items()]
 
     @property
     def address(self) -> str:
@@ -152,19 +183,25 @@ class PhoneDirectory:
                 _LOG.warning("listing Asterisk's phones failed: %s", err)
                 return
         wanted: dict[str, dict[str, Any]] = {}
+        self.endpoints = {}
         for e in listed:
             resource = str(e.get("resource") or "")
-            if (resource in self.configured) if self.configured else AUTO_RESOURCE.match(resource):
+            if not resource:
+                continue
+            self.endpoints[resource] = {**e, "callerid": await self._callerid(resource)}
+            if self.selected(resource):
                 wanted[resource] = e
         for resource in list(self.phones):
             if resource not in wanted:
                 await self._drop(self.phones.pop(resource))
         for resource, e in wanted.items():
+            callerid = self.endpoints[resource]["callerid"]
+            name = self.configured.get(resource) or callerid or f"Phone {resource}"
             p = self.phones.get(resource)
             if p is None:
-                name = self.configured.get(resource) or await self._name(resource)
                 p = Phone(resource=resource, name=name, gateway_id=self.state.gateway_id)
                 self.phones[resource] = p
+            p.name = name
             p.state = str(e.get("state") or "unknown")
             p.busy = bool(e.get("channel_ids"))
             if p.offered and p.runner is None:
@@ -173,9 +210,9 @@ class PhoneDirectory:
                 await self._drop(p, keep=True)
         await self._advertise()
 
-    async def _name(self, resource: str) -> str:
-        if resource not in self._names:
-            self._names[resource] = await self.ari.endpoint_callerid(resource) or f"Phone {resource}"
+    async def _callerid(self, resource: str) -> str:
+        if resource not in self._names:  # asked once per endpoint; callerids change rarely
+            self._names[resource] = await self.ari.endpoint_callerid(resource)
         return self._names[resource]
 
     async def _listen(self, p: Phone) -> None:
@@ -230,13 +267,21 @@ class PhoneDirectory:
         await self.discovery.advertise(infos)
 
     async def run(self, stop: asyncio.Event) -> None:
+        """Refreshes every 30 s, and at once whenever the ARI connection comes
+        up or goes down, so phones show up right after a (re)start."""
+        loop = asyncio.get_running_loop()
+        was_connected: bool | None = None
+        next_at = 0.0
         while not stop.is_set():
+            connected = self.ari.connected
+            if connected != was_connected or loop.time() >= next_at:
+                was_connected, next_at = connected, loop.time() + REFRESH_EVERY
+                try:
+                    await self.refresh()
+                except Exception:
+                    _LOG.exception("refreshing phones failed")
             try:
-                await self.refresh()
-            except Exception:
-                _LOG.exception("refreshing phones failed")
-            try:
-                await asyncio.wait_for(stop.wait(), REFRESH_EVERY)
+                await asyncio.wait_for(stop.wait(), 1.0)
             except TimeoutError:
                 pass
 

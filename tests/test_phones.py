@@ -187,3 +187,54 @@ async def test_phone_page_explains_itself(rig):
     async with aiohttp.ClientSession() as s:
         async with s.get(f"http://127.0.0.1:{alice(rig).port}/") as r:
             assert r.status == 200 and "Alice (101)" in await r.text()
+
+
+async def test_choosing_phones_live(rig):
+    snap = {p["extension"]: p for p in rig.phones.snapshot()}
+    assert set(snap) == {"101", "102", "provider-trunk"}  # every endpoint is listed
+    assert snap["101"]["selected"] and snap["101"]["offered"] and snap["101"]["callerid"] == "Alice"
+    assert not snap["provider-trunk"]["selected"] and snap["102"]["selected"] and not snap["102"]["offered"]
+    assert rig.phones.auto
+
+    chosen = await rig.phones.choose(["provider-trunk=Reception", "101=Front door"])
+    assert chosen == ["provider-trunk=Reception", "101=Front door"] and not rig.phones.auto
+    assert set(rig.phones.phones) == {"provider-trunk", "101"}  # 102 dropped
+    assert alice(rig).label == "Front door (101)"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"http://127.0.0.1:{alice(rig).port}/api/intercom/identity") as r:
+            assert (await r.json())["name"] == "Front door (101)"
+
+    assert await rig.phones.choose(None) == [] and rig.phones.auto
+    assert set(rig.phones.phones) == {"101", "102"} and alice(rig).label == "Alice (101)"
+
+
+async def test_phones_api():
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kig.roster import Roster
+    from kig.web import make_app
+
+    got = []
+
+    async def set_phones(entries):
+        got.append(entries)
+        return {"ok": True, "saved": True}
+
+    async def never(_):
+        return None
+
+    app = make_app(Roster(never), lambda: {}, set_phones=set_phones)
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/api/phones", json={"phones": [{"extension": "101", "name": " Front  door "},
+                                                              {"extension": "102", "name": ""}]})
+        assert (await r.json())["ok"] and got[-1] == ["101=Front door", "102"]
+        r = await client.post("/api/phones", json={"auto": True})
+        assert (await r.json())["ok"] and got[-1] is None
+        bad_bodies = (
+            {"phones": [{"extension": "1=2"}]},
+            {"phones": [{"extension": "101", "name": "a=b"}]},
+            [],
+        )
+        for bad in bad_bodies:
+            assert (await client.post("/api/phones", json=bad)).status == 400
+    assert len(got) == 2

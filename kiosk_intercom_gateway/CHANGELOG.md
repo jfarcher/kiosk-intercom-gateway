@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- **Kiosks can call SIP phones.** Asterisk's phones appear in every kiosk's **Call a kiosk**
+  list. Tapping one rings the phone, which shows the kiosk's name and extension. Answered, it's
+  a two-way 16 kHz call. Busy, declined and unanswered calls show on the kiosk as such.
+- A phone is listed while it's registered with Asterisk, and drops off when it isn't.
+- **Pick the phones on the status page.** The new Phones card lists every Asterisk phone with
+  its registration, a checkbox to offer it to kiosks and a name to show instead of its caller ID.
+  The choice applies at once and is kept in the Configuration (`phones`).
+- A kiosk's **Call back** after a missed call from an offered phone now rings that phone.
+- The Asterisk setup card offers the complete `custom/extensions.conf` to paste, so the
+  kiosk lines can't end up in the wrong section.
+- New options: Kiosks can call phones, Phones, Advertise address.
+
 ## 0.2.3
 
 - A new icon and logo: a blue house with a phone inside.

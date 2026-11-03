@@ -1,7 +1,7 @@
 name: Kiosk Intercom Gateway
-version: "0.2.3"
+version: "0.3.0"
 slug: kiosk_intercom_gateway
-description: Call Kiosk Satellite kiosks from SIP phones through Asterisk
+description: Calls between Kiosk Satellite kiosks and SIP phones, through Asterisk
 url: https://github.com/jfarcher/kiosk-intercom-gateway
 arch:
   - aarch64

@@ -117,6 +117,8 @@ async def main() -> None:
                 "key_fingerprint": roster.key_fingerprint,
                 "discovery": cfg.mdns,
                 "home_assistant": ha.available,
+                "phones_auto": phones.auto if phones else True,
+                "phones_enabled": phones is not None,
                 "asterisk": {**calls.status(), "ari_url": cfg.ari_url, "username": cfg.ari_username,
                              "extension_start": cfg.extension_start, "media_host": cfg.media_host},
             }
@@ -136,9 +138,26 @@ async def main() -> None:
                         "note": f"Applied, but not saved ({err}). Set it under Configuration too."}
             return {"ok": True, "saved": True, "fingerprint": roster.key_fingerprint}
 
+        async def set_phones(entries: list[str] | None) -> dict:
+            """Which phones kiosks can call, from the page: applied at once and
+            kept in the app's configuration (an empty list is automatic)."""
+            if phones is None:
+                return {"ok": False, "error": "Kiosk → phone calls are off (no ARI user, or turned off)."}
+            chosen = await phones.choose(entries)
+            _LOG.info("phones offered to kiosks: %s", ", ".join(chosen) if chosen else "automatic")
+            if not config.under_supervisor():
+                return {"ok": True, "saved": False, "note": "Applied until restart."}
+            try:
+                await save_options({"phones": chosen}, config.raw_options())
+            except Exception as err:
+                _LOG.warning("could not save the phone list to the configuration: %s", err)
+                return {"ok": True, "saved": False, "note": f"Applied, but not saved ({err})."}
+            return {"ok": True, "saved": True}
+
         port = await web_port(cfg)
         runner = web.AppRunner(
-            make_app(roster, info, cfg.ingress_only, set_key=set_key), access_log=None
+            make_app(roster, info, cfg.ingress_only, set_key=set_key, set_phones=set_phones),
+            access_log=None,
         )
         await runner.setup()
         stack.push_async_callback(runner.cleanup)
