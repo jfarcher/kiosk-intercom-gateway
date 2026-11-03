@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.3
+
+- **A reinstalled kiosk keeps its extension.** A kiosk that comes back at the same address and
+  admin port under a new intercom id is treated as the same kiosk: it keeps its number, the old id
+  is forgotten, and any number the new id was given meanwhile is free again. This works whether
+  the gateway hears the new id from the kiosk's announcement or from its identity check, and also
+  across a restart, since the gateway now remembers where each kiosk was last seen. Before, the page
+  kept showing the old number while calls to it ended with `unknown_kiosk`.
+- A kiosk's number on the page and in the sensor is now always the one a call to it reaches. Both
+  come from the same place.
+- **Change a kiosk's number** with the new **Change** button beside it on the page (or
+  `POST /api/extension`). It refuses a number another kiosk that's here holds, and can take one from
+  a kiosk that's gone. Use it to put back a number an earlier version lost on a reinstall.
+
 ## 0.4.2
 
 - Fix the `call` action (phone first, then kiosk) sometimes starting with seconds of silence, or

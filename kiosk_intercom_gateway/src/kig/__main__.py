@@ -158,7 +158,8 @@ async def main() -> None:
 
         port = await web_port(cfg)
         runner = web.AppRunner(
-            make_app(roster, info, cfg.ingress_only, set_key=set_key, set_phones=set_phones),
+            make_app(roster, info, cfg.ingress_only, set_key=set_key, set_phones=set_phones,
+                     set_extension=calls.set_extension),
             access_log=None,
         )
         await runner.setup()

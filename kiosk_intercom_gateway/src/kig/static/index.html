@@ -68,6 +68,11 @@
   .ext { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--accent); margin-right: 8px; }
   .calls { margin-top: 8px; display: grid; gap: 4px; font-size: 14px; }
   .calls .live { color: var(--ok); font-weight: 600; }
+  .k .numedit { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+  .k .numedit input { width: 7em; font: inherit; color: var(--fg); background: var(--bg);
+                      border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+  .k .numedit input:focus { outline: none; border-color: var(--accent); }
+  button.small { font-size: 12px; padding: 2px 8px; margin-left: 6px; vertical-align: 1px; }
   .phones { margin-top: 10px; display: grid; gap: 6px; }
   .phone { display: grid; grid-template-columns: auto auto 1fr auto; gap: 6px 10px; align-items: center;
            padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
@@ -308,6 +313,44 @@ function renderAutomations(g, kiosks) {
   $("autodetails").ontoggle = (e) => { autoOpen = e.target.open; };
 }
 
+// Changing a kiosk's extension by hand (recovery, or a preferred number).
+let numEditing = "";
+const numMsg = {};
+document.addEventListener("click", async (e) => {
+  const id = e.target?.dataset?.num;
+  if (!id || numEditing) return;
+  const row = e.target.closest(".k");
+  const current = row.querySelector(".ext")?.textContent || "";
+  numEditing = id;
+  delete numMsg[id];
+  const box = document.createElement("form");
+  box.className = "numedit";
+  box.innerHTML = `<span class="line">Extension</span>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" value="${esc(current)}" aria-label="Extension">
+    <button type="submit" class="primary">Save</button><button type="button" data-cancel>Cancel</button>
+    <span class="msg"></span>`;
+  row.appendChild(box);
+  const input = box.querySelector("input");
+  input.focus(); input.select();
+  box.querySelector("[data-cancel]").onclick = () => { numEditing = ""; load(); };
+  box.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const msg = box.querySelector(".msg");
+    msg.className = "msg"; msg.textContent = "Saving…";
+    try {
+      const res = await fetch("api/extension", {method: "POST", headers: {"content-type": "application/json"},
+                                                body: JSON.stringify({kiosk: id, extension: input.value.trim()})});
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "HTTP " + res.status);
+      numMsg[id] = data.warning ? {cls: "err", text: data.warning} : {cls: "ok", text: `Now ${data.extension}.`};
+      numEditing = "";
+      await load();
+    } catch (err) {
+      msg.className = "msg err"; msg.textContent = err.message;
+    }
+  };
+});
+
 async function load() {
   try {
     const res = await fetch("api/kiosks", {cache: "no-store"});
@@ -329,13 +372,16 @@ async function load() {
     if (g.asterisk) renderAsterisk(g.asterisk);
     if (g.asterisk) renderPhones(g);
     renderAutomations(g, ks);
+    if (numEditing) return; // keep the number being edited
     $("list").innerHTML = ks.length ? ks.map((k) => `
-      <div class="k">
-        <span class="name">${k.extension ? `<span class="ext">${esc(k.extension)}</span>` : ""}${esc(k.name)}</span>
+      <div class="k" data-kiosk="${esc(k.id)}">
+        <span class="name">${k.extension ? `<span class="ext">${esc(k.extension)}</span>` : ""}${esc(k.name)}` +
+        `${k.id && k.extension ? `<button type="button" class="small" data-num="${esc(k.id)}">Change</button>` : ""}</span>
         <span class="pill ${k.status}">${esc(k.status_text)}</span>
         <span class="meta">${esc(k.address)}:${k.admin_port}${k.area ? " · " + esc(k.area) : ""}` +
         `${k.version ? " · v" + esc(k.version) : ""} · ${k.source === "manual" ? "added by address" : "mDNS"}` +
         `${k.ha_intercom_state ? " · HA: " + esc(k.ha_intercom_state) : ""} · probed ${ago(k.probed_at)}</span>
+        ${numMsg[k.id] ? `<span class="meta msg ${numMsg[k.id].cls}">${esc(numMsg[k.id].text)}</span>` : ""}
       </div>`).join("")
       : `<div class="empty">No kiosks yet. Kiosks announce themselves when <b>Remote management</b> and
          <b>Find other kiosks</b> are on. Kiosks on another network can be added by address in the app's configuration.</div>`;

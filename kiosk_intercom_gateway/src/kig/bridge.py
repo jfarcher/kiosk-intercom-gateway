@@ -175,14 +175,74 @@ class CallManager:
         self.listeners: list[Callable[[dict[str, Any]], None]] = []
         self.out_ring_timeout = min(ring_timeout, 30.0)  # a calling kiosk gives up at 30 s + 10
         roster.on_change(self.assign_extensions)
+        roster.on_rekey(self._kiosk_reinstalled)
         self.assign_extensions()
 
     # ── setup ────────────────────────────────────────────────────────
 
     def assign_extensions(self) -> None:
+        """Every kiosk's shown number, from State: the one a dialled number
+        resolves to, so the two never disagree. A kiosk without one gets the
+        number of an absent id last seen at its address (reinstalled while the
+        gateway was not running), else the lowest free one."""
         for k in self.roster.kiosks.values():
-            if k.id and "extension" not in k.extra:
-                k.extra["extension"] = self.state.extension_for(k.id, self.extension_start)
+            if not k.id:
+                k.extra.pop("extension", None)
+                continue
+            endpoint = f"{k.address}:{k.port}"
+            if k.id not in self.state.extensions and k.present:
+                orphans = [
+                    i for i in self.state.ids_at(endpoint)
+                    if i != k.id and i not in self.roster.kiosks and i in self.state.extensions
+                ]
+                if len(orphans) == 1:
+                    self._kiosk_reinstalled(orphans[0], k.id)
+            if k.present:
+                self.state.remember_address(k.id, endpoint)
+            k.extra["extension"] = self.state.extension_for(k.id, self.extension_start)
+
+    def _kiosk_reinstalled(self, old_id: str, new_id: str) -> None:
+        k = self.roster.kiosks.get(new_id)
+        name = k.name if k is not None and k.name else new_id
+        ext = self.state.move_extension(old_id, new_id)
+        if ext is not None:
+            _LOG.info("kiosk %s changed id %s → %s (reinstalled); keeps extension %s",
+                      name, old_id, new_id, ext)
+            if k is not None:
+                k.extra["extension"] = ext
+        else:
+            _LOG.info("kiosk %s changed id %s → %s (reinstalled)", name, old_id, new_id)
+
+    def set_extension(self, target: str, extension: str) -> dict[str, Any]:
+        """Gives a kiosk a number by hand (the page's recovery control). Refused
+        when another kiosk that is here holds it; taken from an id that is not."""
+        extension = extension.strip()
+        if not extension.isdigit() or not 2 <= len(extension) <= 6:
+            return {"ok": False, "error": "An extension is 2 to 6 digits."}
+        k = self.roster.kiosks.get(target.strip()) or self.roster.find(target)
+        if k is None or not k.id:
+            return {"ok": False, "error": f"No kiosk {target!r}."}
+        holder = self.state.kiosk_for(extension)
+        if holder is not None and holder != k.id:
+            other = self.roster.kiosks.get(holder)
+            if other is not None and other.present:
+                owner = other.name or holder
+                return {"ok": False, "conflict": True, "error": f"{extension} belongs to {owner}."}
+        phones = self.phones.endpoints if self.phones else {}
+        if extension in phones:
+            return {"ok": False, "conflict": True, "error": f"{extension} is a phone on Asterisk."}
+        previous = self.state.extensions.get(k.id)
+        taken_from = self.state.assign(k.id, extension)
+        k.extra["extension"] = extension
+        _LOG.info("kiosk %s given extension %s by hand (was %s%s)", k.name or k.id, extension, previous,
+                  f", taken from absent {taken_from}" if taken_from else "")
+        start = str(self.extension_start)
+        result: dict[str, Any] = {"ok": True, "kiosk": k.id, "extension": extension}
+        if len(extension) != len(start) or extension[0] != start[0]:
+            result["warning"] = (f"Asterisk's dialplan sends _{start[0]}{'X' * (len(start) - 1)} to kiosks; "
+                                 f"{extension} needs a line of its own.")
+        self.roster._changed()
+        return result
 
     def kiosk_for(self, target: str) -> Kiosk | None:
         target = target.strip()

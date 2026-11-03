@@ -198,7 +198,7 @@ minute of Home Assistant restarting.
 | Probe interval | Seconds between identity checks of each kiosk (10–600). |
 | Asterisk ARI address | `http://127.0.0.1:8088` for the Asterisk app on this Home Assistant. |
 | ARI username, ARI password | The user from `ari.conf`. Empty leaves SIP calls off. |
-| First kiosk extension | Kiosks are numbered from here (801) in the order they're first seen, and keep their numbers. Avoid 700–703, the Asterisk app's call parking. |
+| First kiosk extension | Kiosks are numbered from here (801) in the order they're first seen, and keep their numbers, through a reinstall too. **Change** beside a kiosk on the page gives it another. Avoid 700–703, the Asterisk app's call parking. |
 | Ring timeout | Seconds a kiosk may ring before the caller hears no answer. |
 | Intercom port | The port kiosks reach the gateway on during a call. 0 picks a free one. |
 | Kiosks can call phones | Offer Asterisk's phones in the kiosks' Call list. |

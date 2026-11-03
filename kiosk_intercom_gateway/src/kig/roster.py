@@ -152,12 +152,46 @@ class Roster:
         self.probe_interval = probe_interval
         self.kiosks: dict[str, Kiosk] = {}
         self._listeners: list[Callable[[], None]] = []
+        # Told (old id, new id) when a kiosk comes back under a new id.
+        self._rekey_listeners: list[Callable[[str, str], None]] = []
         self._lock = asyncio.Lock()
 
     # ── change notification ──────────────────────────────────────────
 
     def on_change(self, listener: Callable[[], None]) -> None:
         self._listeners.append(listener)
+
+    def on_rekey(self, listener: Callable[[str, str], None]) -> None:
+        self._rekey_listeners.append(listener)
+
+    def _reinstalled(self, k: Kiosk, new_id: str) -> None:
+        """``k`` answers at its address and admin port under ``new_id`` now: the
+        same physical kiosk, reinstalled. One object under the new id (an
+        object an announcement made for it meanwhile folds into this one), and
+        the listeners move whatever belonged to the old id."""
+        old_id = k.id
+        other = self.kiosks.get(new_id)
+        if other is not None and other is not k:
+            k.heard = k.heard or other.heard
+            k.manual = k.manual or other.manual
+            k.name = other.name or k.name
+            k.version = other.version or k.version
+            k.host = other.host or k.host
+            del self.kiosks[new_id]
+        self.kiosks.pop(k.key, None)
+        k.id = k.key = new_id
+        self.kiosks[new_id] = k
+        for listener in self._rekey_listeners:
+            try:
+                listener(old_id, new_id)
+            except Exception:  # a listener must never break discovery
+                _LOG.exception("rekey listener failed")
+
+    def _same_endpoint(self, address: str, port: int, kid: str) -> Kiosk | None:
+        """The one kiosk known at ``address:port`` under another id, if any."""
+        found = [k for k in self.kiosks.values()
+                 if k.id and k.id != kid and k.address == address and k.port == port]
+        return found[0] if len(found) == 1 else None
 
     def _changed(self) -> None:
         for listener in self._listeners:
@@ -201,6 +235,14 @@ class Roster:
                 mk.key = kid
                 self.kiosks[kid] = mk
         k = self.kiosks.get(kid)
+        if k is None:
+            # A new id where a kiosk we know answers: that kiosk, reinstalled.
+            # The old id is not heard anywhere else, or its object would have
+            # moved there with it, so a reused IP never takes its number.
+            same = self._same_endpoint(address, port, kid)
+            if same is not None:
+                self._reinstalled(same, kid)
+                k = same
         if k is None:
             k = Kiosk(key=kid, address=address, port=port, tls=tls, id=kid)
             self.kiosks[kid] = k
@@ -270,6 +312,10 @@ class Roster:
             k.intercom_port = None
             k.intercom_tls = None
         kid = str(data.get("id") or "")
+        if kid and k.id and kid != k.id:
+            # The kiosk at this address answers under another id: reinstalled.
+            self._reinstalled(k, kid)
+            return
         if kid and not k.id:
             k.id = kid
         if kid and k.key != kid:
