@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- The ARI address works with or without `/ari` at the end
+  (`http://127.0.0.1:8088` and `http://127.0.0.1:8088/ari` both work). Before, the
+  second asked Asterisk for `/ari/ari/…` and got 404.
+- A 404 or 401 from Asterisk now says what it means on the status page and in the log.
+
 ## 0.2.0
 
 - **SIP phones can call kiosks.** Dial a kiosk's extension on Asterisk and the kiosk

@@ -22,7 +22,10 @@ class AriError(RuntimeError):
 
 class Ari:
     def __init__(self, url: str, username: str, password: str, app: str) -> None:
-        self.base = url.rstrip("/") + "/ari"
+        root = url.strip().rstrip("/")
+        if root.endswith("/ari"):  # the address with ARI's own path, which we add ourselves
+            root = root[: -len("/ari")]
+        self.base = root + "/ari"
         self.app = app
         self._auth = aiohttp.BasicAuth(username, password)
         self._session: aiohttp.ClientSession | None = None
@@ -138,7 +141,16 @@ class Ari:
                         stopper.cancel()
                 self.error = "event stream closed"
             except AriError as err:
-                self.error = "wrong ARI username or password" if err.status == 401 else str(err)
+                if err.status == 401:
+                    self.error = "wrong ARI username or password (Asterisk answered 401)"
+                elif err.status == 404:
+                    self.error = (
+                        f"Asterisk's web server answered 404 for {self.base}/asterisk/info, so ARI is not "
+                        "served there: check the ARI address (just http://host:8088) and that ari.conf "
+                        "says enabled = yes"
+                    )
+                else:
+                    self.error = str(err)
             except (aiohttp.ClientError, OSError, TimeoutError) as err:
                 self.error = f"cannot reach Asterisk ARI at {self.base} ({err.__class__.__name__})"
             self.connected = False

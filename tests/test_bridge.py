@@ -248,3 +248,29 @@ async def test_helper_and_targetless_channels_are_ignored(rig):
     await rig.fake_ari.events.put({"type": "StasisStart", "channel": ch, "args": []})
     await asyncio.sleep(0.3)
     assert not rig.kiosk.calls and not any(m == "DELETE" for m, _, _ in rig.fake_ari.requests)
+
+
+def test_ari_address_with_or_without_ari_path():
+    for url in ("http://127.0.0.1:8088", "http://127.0.0.1:8088/", "http://127.0.0.1:8088/ari",
+                "http://127.0.0.1:8088/ari/ "):
+        assert Ari(url, "u", "p", "a").base == "http://127.0.0.1:8088/ari"
+
+
+async def test_404_explains_itself():
+    fake = FakeAri()
+    await fake.start()
+    ari = Ari(fake.url + "/wrong-place", "kig", "secret", "kiosk-intercom")  # right user, no ARI there
+    stop = asyncio.Event()
+
+    async def ignore(_):
+        return None
+
+    task = asyncio.ensure_future(ari.run(ignore, stop))
+    try:
+        await until(lambda: "404" in ari.error, what="a 404 explanation")
+        assert "ARI address" in ari.error and not ari.connected
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
+        await ari.close()
+        await fake.close()
