@@ -17,7 +17,8 @@ import logging
 import re
 import socket
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from aiohttp import web
@@ -44,6 +45,8 @@ class Phone:
     port: int = 0
     gateway_id: str = ""
     runner: web.AppRunner | None = None
+    # Kiosks that found this phone: they check its identity every ~30 s.
+    seen_by: dict[str, float] = field(default_factory=dict)  # address → when
 
     @property
     def id(self) -> str:
@@ -138,7 +141,9 @@ class PhoneDirectory:
         out = []
         for resource, e in sorted(self.endpoints.items()):
             p = self.phones.get(resource)
+            seen = self._seen_by(p) if p else []
             out.append({
+                "seen_by": seen,
                 "extension": resource,
                 "name": p.label if p else e.get("callerid") or resource,
                 "callerid": e.get("callerid", ""),
@@ -150,6 +155,16 @@ class PhoneDirectory:
                 "port": p.port if p else 0,
             })
         return out
+
+    def _seen_by(self, p: Phone) -> list[str]:
+        """Names of the kiosks that checked this phone in the last two minutes."""
+        now = time.time()
+        p.seen_by = {a: t for a, t in p.seen_by.items() if now - t < 120}
+        names = []
+        for address in sorted(p.seen_by):
+            k = next((k for k in self.roster.kiosks.values() if k.address == address), None)
+            names.append(k.name if k and k.name else address)
+        return names
 
     async def choose(self, entries: list[str] | None) -> list[str]:
         """New selection from the page: ``None`` for automatic, else entries as

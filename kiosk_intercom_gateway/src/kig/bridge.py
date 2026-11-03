@@ -528,7 +528,9 @@ class CallManager:
     def _calls_with(self, phone: Any) -> list[Call]:
         return [c for c in self.calls.values() if c.direction == "out" and c.phone == phone.resource]
 
-    async def phone_identity(self, phone: Any, _: web.Request) -> web.Response:
+    async def phone_identity(self, phone: Any, request: web.Request) -> web.Response:
+        if request.remote:  # a kiosk that has found this phone (or the page's own checks)
+            phone.seen_by[request.remote] = time.time()
         return web.json_response(
             {
                 "id": phone.id,

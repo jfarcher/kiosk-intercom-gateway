@@ -63,6 +63,10 @@ def instance_id(name: str) -> str:
     return name.removesuffix("." + SERVICE).removesuffix(SERVICE).removeprefix("ks-")
 
 
+def _records(info: ServiceInfo) -> tuple[Any, ...]:
+    return info.port, info.properties, info.addresses
+
+
 class Discovery:
     """Browses for kiosks and, for the phones the gateway offers, announces
     them the way kiosks announce themselves.
@@ -137,24 +141,29 @@ class Discovery:
 
     async def advertise(self, infos: dict[str, ServiceInfo]) -> None:
         """Makes ``infos`` (by id) the set announced: new ones registered,
-        changed ones replaced, missing ones withdrawn with a goodbye."""
+        changed ones updated in place, missing ones withdrawn with a goodbye.
+
+        A changed one is never withdrawn and re-registered: its goodbyes (TTL
+        0, same instance name) would trail the new announcement and make every
+        kiosk drop it until the next 30-second announcement.
+        """
         assert self._azc is not None
         for kid in list(self._advertised):
-            old = self._advertised[kid]
-            new = infos.get(kid)
-            if new is None or (new.port, new.properties, new.addresses) != (
-                old.port, old.properties, old.addresses
-            ):
-                del self._advertised[kid]
+            if kid not in infos:
+                old = self._advertised.pop(kid)
                 try:
                     await self._azc.async_unregister_service(old)
                 except Exception as err:
                     _LOG.debug("unregister %s: %s", old.name, err)
         for kid, info in infos.items():
-            if kid in self._advertised:
-                continue
+            old = self._advertised.get(kid)
             try:
-                await self._azc.async_register_service(info, cooperating_responders=True, strict=False)
+                if old is None:
+                    await self._azc.async_register_service(info, cooperating_responders=True, strict=False)
+                elif _records(info) != _records(old):
+                    await self._azc.async_update_service(info)
+                else:
+                    continue
             except Exception as err:
                 _LOG.warning("could not announce %s: %s", info.name, err)
                 continue

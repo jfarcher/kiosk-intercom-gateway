@@ -238,3 +238,12 @@ async def test_phones_api():
         for bad in bad_bodies:
             assert (await client.post("/api/phones", json=bad)).status == 400
     assert len(got) == 2
+
+
+async def test_shows_which_kiosks_found_a_phone(rig):
+    assert next(p for p in rig.phones.snapshot() if p["extension"] == "101")["seen_by"] == []
+    # The kiosk at 127.0.0.1 checks the phone, as it does every ~30 s.
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"http://127.0.0.1:{alice(rig).port}/api/intercom/identity") as r:
+            assert r.status == 200
+    assert next(p for p in rig.phones.snapshot() if p["extension"] == "101")["seen_by"] == ["Kitchen"]

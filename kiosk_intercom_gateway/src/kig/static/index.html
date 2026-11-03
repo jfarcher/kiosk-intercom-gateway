@@ -233,6 +233,8 @@ function renderPhones(g) {
              placeholder="${esc(p.callerid || "Phone " + p.extension)}" aria-label="Name for ${esc(p.extension)}">
       <span class="state ${esc(p.state)}">${esc(STATE[p.state] || p.state)}${p.busy ? " · in a call" : ""}</span>
       ${p.selected && !p.offered ? `<span class="note">Shows on kiosks once it registers.</span>` : ""}
+      ${p.offered ? `<span class="note">${p.seen_by.length ? "Found by " + esc(p.seen_by.join(", "))
+        : "No kiosk has found it yet (give it a minute after saving)"}</span>` : ""}
     </label>`).join("");
   card.innerHTML = `
     <h2>Phones kiosks can call</h2>

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+- Fix phones vanishing from the kiosks after **Save** on the Phones card. Changing a phone
+  withdrew its announcement and made a new one, and the withdrawal's goodbye packets arrived
+  after it, so kiosks dropped the phone for up to 30 seconds. Changes are now announced in place.
+- Each offered phone on the Phones card says which kiosks have found it, or that none has yet.
+  That shows whether the kiosks hear the gateway's announcements.
+
 ## 0.3.0
 
 - **Kiosks can call SIP phones.** Asterisk's phones appear in every kiosk's **Call a kiosk**

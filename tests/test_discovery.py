@@ -67,3 +67,36 @@ async def test_phone_announcement_is_one_kiosk_style_packet():
         assert not sent
     finally:
         await d.stop()
+
+
+async def test_renaming_a_phone_sends_no_goodbye():
+    """A goodbye (TTL 0) for the same instance would trail the new records and
+    make every kiosk drop the phone until the next 30-second announcement."""
+    import asyncio
+
+    from zeroconf import DNSIncoming
+
+    from kig.discovery import Discovery
+    from kig.roster import Roster
+
+    async def never(_):
+        return None
+
+    d = Discovery(Roster(never), browse=False, ignore_prefix="kig-abc")
+    await d.start()
+    sent = []
+    try:
+        d._azc.zeroconf.async_send = lambda out, *a, **k: sent.append(out)
+        first = d.service_info("kig-abc-101", "Alice (101)", "192.168.1.5", 40001, "0.3.1", "kig-abc")
+        await d.advertise({"kig-abc-101": first})
+        await asyncio.sleep(1)
+        sent.clear()
+        renamed = d.service_info("kig-abc-101", "Front door (101)", "192.168.1.5", 40001, "0.3.1", "kig-abc")
+        await d.advertise({"kig-abc-101": renamed})
+        await asyncio.sleep(1)  # the update's own rebroadcasts
+        records = [r for out in sent for p in out.packets() for r in DNSIncoming(p).answers()]
+        assert records and not [r for r in records if r.ttl == 0]
+        texts = [r.text for r in records if type(r).__name__ == "DNSText"]
+        assert texts and all(b"name=Front door (101)" in t for t in texts)
+    finally:
+        await d.stop()
