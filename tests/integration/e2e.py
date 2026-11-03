@@ -218,6 +218,17 @@ async def click_to_call(kiosk: FakeKiosk, calls: CallManager, s, url, label: str
     await asyncio.wait_for(kiosk.ws_open.wait(), 10)
     await asyncio.sleep(3)  # listen, then the kiosk hangs up
     heard = ints(b"".join(kiosk.frames[-20:]))
+    if len(kiosk.frames) < 25:  # what Asterisk saw, before hanging up
+        c = next(iter(calls.calls.values()), None)
+        if c is not None:
+            note(f"{label}: gateway media received {c.media.received if c.media else None}, "
+                 f"sent {c.media.sent if c.media else None}; bridge {c.bridge}; phone {c.channel}")
+            async with s.get(f"{url}/ari/channels/{c.channel}/rtp_statistics") as r:
+                note(f"{label}: phone RTP stats {r.status} {(await r.text())[:400]}")
+            async with s.get(f"{url}/ari/bridges/{c.bridge}") as r:
+                note(f"{label}: bridge {r.status} {(await r.text())[:400]}")
+        async with s.get(f"{url}/ari/channels") as r:
+            note(f"{label}: channels {[(x['name'], x['state']) for x in await r.json()]}")
     await kiosk.hang_up()
     f, rms = frequency(heard, SAMPLE_RATE), level(heard)
     note(f"{label}: kiosk heard {len(kiosk.frames)} frames; last 1.6 s: {f:.0f} Hz, RMS {rms:.0f}")
