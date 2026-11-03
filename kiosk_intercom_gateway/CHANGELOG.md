@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2
+
+- Fix the `call` action (phone first, then kiosk) sometimes starting with seconds of silence, or
+  none of the phone's audio reaching the kiosk at all. The ringback the phone hears while the kiosk
+  rings now plays in a holding bridge of its own, and the call gets a fresh bridge the way every
+  other call does. Both problems came from how Asterisk handles a channel's playback and a bridge
+  joined later.
+
 ## 0.4.1
 
 - Fix a phone hanging up at the moment a kiosk answers. If it landed while the gateway was still
