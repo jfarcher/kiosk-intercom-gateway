@@ -43,6 +43,15 @@ class FakeKiosk:
         self.ws_open = asyncio.Event()
         self.ws_closed = asyncio.Event()
         self.server: TestServer | None = None
+        # As a caller: calls this kiosk placed, by id → the callee's port.
+        self.outgoing: dict[str, int] = {}
+        self.out_ws: aiohttp.ClientWebSocketResponse | None = None
+        self.out_frames: list[bytes] = []
+        self.out_texts: list[str] = []
+        self.out_open = asyncio.Event()
+        self.out_closed = asyncio.Event()
+        self._session: aiohttp.ClientSession | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         app = web.Application()
@@ -59,6 +68,12 @@ class FakeKiosk:
         return self.server.port
 
     async def close(self) -> None:
+        for t in self._tasks:
+            t.cancel()
+        if self.out_ws is not None:
+            await self.out_ws.close()
+        if self._session is not None:
+            await self._session.close()
         if self.server:
             await self.server.close()
 
@@ -88,7 +103,13 @@ class FakeKiosk:
         call = request.match_info["call"]
         if not self._token(request, call):
             return web.json_response({"ok": False}, status=403)
-        self.signals.append((call, (await request.json())["action"]))
+        action = (await request.json())["action"]
+        self.signals.append((call, action))
+        if action == "answer" and call in self.outgoing:
+            # As the kiosk does (intercom_manager _signal → _connect): open the
+            # audio socket to the callee that answered.
+            t = asyncio.ensure_future(self._open_audio(call))
+            self._tasks.add(t)
         return web.json_response({"ok": True})
 
     async def _audio(self, request: web.Request) -> web.StreamResponse:
@@ -109,6 +130,53 @@ class FakeKiosk:
         return ws
 
     # ── what the person at the kiosk does ────────────────────────────
+
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def place_call(self, port: int, call: str = "kiosk-call-1", kind: str = "call",
+                         key: str | None = None, tls: bool = False) -> tuple[int, dict[str, Any]]:
+        """Calls the peer on ``port`` as a kiosk does: POST /api/intercom/call."""
+        self.outgoing[call] = port
+        token = issue_token(key or self.key, call, self.id)
+        frm = {"id": self.id, "name": self.name, "address": "127.0.0.1", "port": self.port,
+               "version": "2026.10.9", **({"tls": True} if tls else {})}
+        async with self.session.post(f"http://127.0.0.1:{port}/api/intercom/call",
+                                     json={"call": call, "kind": kind, "from": frm},
+                                     headers={"Authorization": f"Bearer {token}"}) as r:
+            return r.status, await r.json()
+
+    async def signal_callee(self, action: str, call: str = "kiosk-call-1") -> int:
+        token = issue_token(self.key, call, self.id)
+        async with self.session.post(f"http://127.0.0.1:{self.outgoing[call]}/api/intercom/call/{call}",
+                                     json={"action": action},
+                                     headers={"Authorization": f"Bearer {token}"}) as r:
+            return r.status
+
+    async def _open_audio(self, call: str) -> None:
+        token = issue_token(self.key, call, self.id)
+        self.out_ws = await self.session.ws_connect(
+            f"ws://127.0.0.1:{self.outgoing[call]}/api/intercom/audio/{call}", params={"token": token})
+        await self.out_ws.send_str(json.dumps({"type": "talk", "on": False}))
+        self.out_open.set()
+        async for msg in self.out_ws:
+            if msg.type == aiohttp.WSMsgType.BINARY:
+                self.out_frames.append(msg.data)
+            elif msg.type == aiohttp.WSMsgType.TEXT:
+                self.out_texts.append(msg.data)
+        self.out_closed.set()
+
+    async def out_talk(self, frame: bytes) -> None:
+        assert self.out_ws is not None
+        await self.out_ws.send_bytes(frame)
+
+    async def out_hang_up(self) -> None:
+        assert self.out_ws is not None
+        await self.out_ws.send_str(json.dumps({"type": "end"}))
+        await self.out_ws.close()
 
     def last_call(self) -> str:
         return list(self.calls)[-1]
@@ -189,6 +257,9 @@ class FakeAri:
         self.event_ws_connected = asyncio.Event()
         self.server: TestServer | None = None
         self._n = 0
+        self.endpoints: list[dict[str, Any]] = []
+        self.callerids: dict[str, str] = {}
+        self.originated: list[dict[str, str]] = []
 
     async def start(self) -> None:
         app = web.Application(middlewares=[self._check_auth])
@@ -196,6 +267,9 @@ class FakeAri:
         r.add_get("/ari/asterisk/info", self._info)
         r.add_get("/ari/events", self._events)
         r.add_post("/ari/channels/externalMedia", self._external_media)
+        r.add_post("/ari/channels", self._originate)
+        r.add_get("/ari/endpoints/{tech}", self._endpoints)
+        r.add_get("/ari/asterisk/config/dynamic/res_pjsip/endpoint/{id}", self._endpoint_config)
         r.add_post("/ari/channels/{id}/{op}", self._channel_op)
         r.add_delete("/ari/channels/{id}", self._hangup)
         r.add_get("/ari/channels/{id}/variable", self._variable)
@@ -244,6 +318,39 @@ class FakeAri:
         finally:
             sender.cancel()
         return ws
+
+    async def _endpoints(self, request: web.Request) -> web.Response:
+        self._log(request)
+        return web.json_response(self.endpoints)
+
+    async def _endpoint_config(self, request: web.Request) -> web.Response:
+        rid = request.match_info["id"]
+        if rid not in self.callerids:
+            return web.json_response({"message": "not found"}, status=404)
+        return web.json_response([{"attribute": "context", "value": "default"},
+                                  {"attribute": "callerid", "value": self.callerids[rid]}])
+
+    async def _originate(self, request: web.Request) -> web.Response:
+        self._log(request)
+        q = dict(request.query)
+        self._n += 1
+        cid = f"out-{self._n}"
+        ch = {"id": cid, "name": f"{q['endpoint']}-{self._n:04x}", "state": "Down",
+              "caller": {"name": "", "number": ""}}
+        self.channels[cid] = ch
+        self.originated.append({**q, "id": cid})
+        return web.json_response(ch)
+
+    def phone_answers(self, cid: str) -> None:
+        """The dialled phone picks up: the channel enters the app with its appArgs."""
+        q = next(o for o in self.originated if o["id"] == cid)
+        self.events.put_nowait({"type": "StasisStart", "channel": self.channels[cid],
+                                "args": q["appArgs"].split(",")})
+
+    def phone_refuses(self, cid: str, cause: int) -> None:
+        """Busy (17), no answer (19), rejected (21): destroyed, never in the app."""
+        ch = self.channels.pop(cid)
+        self.events.put_nowait({"type": "ChannelDestroyed", "channel": ch, "cause": cause})
 
     async def _info(self, _: web.Request) -> web.Response:
         return web.json_response({"system": {"version": "22.11.0"}})

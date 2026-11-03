@@ -29,6 +29,8 @@ options:
   ari_password: ""
   extension_start: 801
   ring_timeout: 60
+  offer_phones: true
+  phones: []
   log_level: info
 schema:
   intercom_key: password?
@@ -44,4 +46,8 @@ schema:
   ring_timeout: int(10,300)
   intercom_port: int(0,65535)?
   media_host: str?
+  offer_phones: bool
+  phones:
+    - str
+  advertise_address: str?
   log_level: list(debug|info|warning|error)

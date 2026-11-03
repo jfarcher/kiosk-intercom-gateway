@@ -13,6 +13,7 @@ from . import __version__, config
 from .ari import Ari
 from .bridge import CallManager
 from .discovery import Discovery
+from .phones import PhoneDirectory
 from .ha import HomeAssistant, save_options, supervisor_ingress_port
 from .probe import HttpProber
 from .roster import Roster
@@ -74,9 +75,10 @@ async def main() -> None:
             stack.push_async_callback(ari.close)
         else:
             _LOG.info("no ARI username set: SIP calls are off")
+        state = State()
         calls = CallManager(
             roster,
-            State(),
+            state,
             ari,
             extension_start=cfg.extension_start,
             ring_timeout=cfg.ring_timeout,
@@ -91,10 +93,23 @@ async def main() -> None:
             raise SystemExit(1) from err
         stack.push_async_callback(calls.stop)
 
-        if cfg.mdns:
-            discovery = Discovery(roster)
+        discovery = None
+        if cfg.mdns or ari is not None:
+            # Browsing finds kiosks; announcing offers phones to them.
+            discovery = Discovery(roster, browse=cfg.mdns, ignore_prefix=state.gateway_id)
             await discovery.start()
             stack.push_async_callback(discovery.stop)
+
+        phones = None
+        if ari is not None and cfg.offer_phones:
+            phones = PhoneDirectory(
+                ari, roster, state, discovery,
+                {"identity": calls.phone_identity, "call": calls.phone_call,
+                 "signal": calls.phone_signal, "audio": calls.phone_audio},
+                configured=cfg.phones, advertise_address=cfg.advertise_address,
+            )
+            calls.phones = phones
+            stack.push_async_callback(phones.close)
 
         def info() -> dict:
             return {
@@ -138,6 +153,8 @@ async def main() -> None:
         jobs = [roster.run(stop), ha.run(stop)]
         if ari is not None:
             jobs.append(ari.run(calls.on_event, stop))
+        if phones is not None:
+            jobs.append(phones.run(stop))
         await asyncio.gather(*jobs)
     _LOG.info("stopped")
 

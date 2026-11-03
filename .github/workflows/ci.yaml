@@ -71,14 +71,16 @@ jobs:
           echo "::notice title=recordings::$(docker exec ast sh -c 'ls -la /tmp/kig* /var/spool/asterisk/recording/ 2>&1' | tr '\n' ' ')"
           docker cp ast:/var/spool/asterisk/recording/kig-snoop.wav kig-snoop.wav || true
           docker cp ast:/tmp/kig-ci.wav kig-ci.wav
-          # The snoop is the gateway's RTP as Asterisk received it; the second is the far side's Record().
-          python3 tests/integration/e2e.py --recording kig-snoop.wav kig-ci.wav
+          docker cp ast:/tmp/kig-out.wav kig-out.wav
+          # The snoop is the gateway's audio as Asterisk received it; kig-ci.wav the far side's
+          # Record() of a phone → kiosk call; kig-out.wav the phone's Record() of a kiosk → phone call.
+          python3 tests/integration/e2e.py --recording kig-snoop.wav kig-ci.wav kig-out.wav
       - name: Asterisk log
         if: always()
         run: |
           docker logs ast 2>&1 | tail -80
           lines=$(docker logs ast 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
-            | grep -E "WARNING|ERROR|Record|RECORD|kig|UnicastRTP|strict" \
+            | grep -E "WARNING|ERROR|Record|RECORD|kig|KIGCI|UnicastRTP|strict" \
             | grep -v -E "declined to load|LDAP|phoneprov|getnameinfo|users.conf|non-required" | tail -25)
           echo "::notice title=asterisk log::$(echo "$lines" | sed ':a;N;$!ba;s/\n/%0A/g')"
           clean=$(docker logs ast 2>&1 | sed 's/\x1b\[[0-9;]*m//g')

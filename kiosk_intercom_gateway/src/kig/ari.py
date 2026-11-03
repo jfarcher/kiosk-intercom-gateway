@@ -87,6 +87,40 @@ class Ari:
             data=media_id,
         )
 
+    async def endpoints(self, technology: str = "PJSIP") -> list[dict[str, Any]]:
+        """``[{technology, resource, state: online|offline|unknown, channel_ids}]``."""
+        return list(await self.request("GET", f"/endpoints/{technology}") or [])
+
+    async def endpoint_callerid(self, resource: str) -> str:
+        """The ``callerid`` an endpoint is configured with, '' when it has none
+        or Asterisk will not say (``"Alice" <100>`` → ``Alice``)."""
+        try:
+            tuples = await self.request("GET", f"/asterisk/config/dynamic/res_pjsip/endpoint/{resource}")
+        except AriError:
+            return ""
+        for t in tuples or []:
+            if t.get("attribute") == "callerid":
+                value = str(t.get("value") or "").strip()
+                if value.startswith('"') and '"' in value[1:]:
+                    return value[1 : value.index('"', 1)].strip()
+                return value.split("<", 1)[0].strip()
+        return ""
+
+    async def originate(
+        self, endpoint: str, app_args: str, caller_id: str, timeout: int
+    ) -> dict[str, Any]:
+        """Dials ``endpoint``; the channel enters our app (with ``app_args``)
+        once answered, and is destroyed with a cause if it never is."""
+        return await self.request(
+            "POST",
+            "/channels",
+            endpoint=endpoint,
+            app=self.app,
+            appArgs=app_args,
+            callerId=caller_id,
+            timeout=timeout,
+        )
+
     async def bridge(self, *channels: str) -> str:
         b = await self.request("POST", "/bridges", type="mixing")
         await self.request("POST", f"/bridges/{b['id']}/addChannel", channel=",".join(channels))

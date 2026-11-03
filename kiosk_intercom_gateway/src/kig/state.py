@@ -24,6 +24,11 @@ class State:
         self.extensions: dict[str, str] = (
             {str(k): str(v) for k, v in ext.items()} if isinstance(ext, dict) else {}
         )
+        ports = data.get("phone_ports")
+        # A port per offered phone, kept so kiosks find it where it was.
+        self.phone_ports: dict[str, int] = (
+            {str(k): int(v) for k, v in ports.items() if str(v).isdigit()} if isinstance(ports, dict) else {}
+        )
         if not data.get("gateway_id"):
             self.save()
 
@@ -41,7 +46,8 @@ class State:
         tmp = self.path.with_suffix(".tmp")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"gateway_id": self.gateway_id, "extensions": self.extensions}
+            data = {"gateway_id": self.gateway_id, "extensions": self.extensions,
+                    "phone_ports": self.phone_ports}
             tmp.write_text(json.dumps(data, indent=1))
             tmp.replace(self.path)
         except OSError as err:

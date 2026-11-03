@@ -46,5 +46,21 @@ configuration:
     description: >-
       Where Asterisk connects for call audio. 127.0.0.1 when Asterisk runs on
       this Home Assistant; this machine's LAN address when it runs elsewhere.
+  offer_phones:
+    name: Kiosks can call phones
+    description: >-
+      Offer Asterisk's phones in every kiosk's Call a kiosk list. A phone is
+      listed while it is registered.
+  phones:
+    name: Phones
+    description: >-
+      Which phones to offer, as an extension or extension=Name (102=Front
+      door). Empty offers every numbered extension Asterisk has, named by its
+      caller ID.
+  advertise_address:
+    name: Advertise address
+    description: >-
+      The address kiosks reach the phones on. Empty finds this machine's LAN
+      address by itself; set it when Home Assistant has several networks.
   log_level:
     name: Log level

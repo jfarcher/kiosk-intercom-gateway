@@ -25,3 +25,45 @@ def test_ignores_unusable():
 
 def test_instance_id():
     assert instance_id("ks-abc." + SERVICE) == "abc"
+
+
+async def test_phone_announcement_is_one_kiosk_style_packet():
+    """Kiosks only take an announcement whose PTR, SRV, TXT and A arrive in one
+    packet (FleetDiscovery.kt), and re-announcing is ours to do every 30 s."""
+    from zeroconf import DNSIncoming
+
+    from kig.discovery import Discovery
+    from kig.roster import Roster
+
+    async def never(_):
+        return None
+
+    d = Discovery(Roster(never), browse=False, ignore_prefix="kig-abc")
+    await d.start()
+    sent = []
+    try:
+        d._azc.zeroconf.async_send = lambda out, *a, **k: sent.append(out)
+        info = d.service_info("kig-abc-101", "Alice (101)", "192.168.1.5", 40001, "0.3.0", "kig-abc")
+        await d.advertise({"kig-abc-101": info})
+        sent.clear()
+        d.announce()
+        packets = [p for out in sent for p in out.packets()]
+        assert len(packets) == 1
+        records = DNSIncoming(packets[0]).answers()
+        kinds = {type(r).__name__ for r in records}
+        assert {"DNSPointer", "DNSService", "DNSText", "DNSAddress"} <= kinds
+        srv = next(r for r in records if type(r).__name__ == "DNSService")
+        assert srv.port == 40001 and srv.server == "kig-abc.local."
+        txt = next(r for r in records if type(r).__name__ == "DNSText").text
+        assert b"id=kig-abc-101" in txt and b"port=40001" in txt and b"name=Alice (101)" in txt
+        ptr = next(r for r in records if type(r).__name__ == "DNSPointer")
+        assert ptr.alias == f"ks-kig-abc-101.{SERVICE}"
+        # Ours, heard back, is not a kiosk.
+        assert d._ours("kig-abc-101") and not d._ours("kitchen-id")
+        # Withdrawn phones say goodbye and stop being announced.
+        await d.advertise({})
+        sent.clear()
+        d.announce()
+        assert not sent
+    finally:
+        await d.stop()

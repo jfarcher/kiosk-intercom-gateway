@@ -1,7 +1,14 @@
-"""SIP → kiosk calls: Asterisk hands a call to this app over ARI (Stasis),
-the gateway rings the kiosk over the intercom wire as if it were a kiosk,
-and on answer bridges Asterisk's external media (slin16 over AudioSocket)
-to the kiosk's audio WebSocket.
+"""Calls between SIP phones and kiosks, both ways.
+
+SIP → kiosk: Asterisk hands a call to this app over ARI (Stasis), the gateway
+rings the kiosk over the intercom wire as if it were a kiosk, and on answer
+bridges Asterisk's external media (slin16 over AudioSocket) to the kiosk's
+audio WebSocket.
+
+Kiosk → SIP: every phone is offered to the kiosks as a kiosk of its own
+(phones.py). A kiosk's call to one is originated over ARI; when the phone
+answers, the gateway tells the kiosk, which opens its audio socket to the
+phone's listener. The roles of the wire below swap: the kiosk is the caller.
 
 Kiosk Satellite's side of a call, as the gateway sees it (the gateway is the
 caller):
@@ -51,6 +58,12 @@ HANGUP_CAUSE = {
 }
 # Channels ARI creates for media work, never callers.
 HELPER_CHANNELS = ("AudioSocket/", "UnicastRTP/", "Snoop/", "Announcer/", "Recorder/", "WebSocket/")
+# Why an originated call to a phone never got answered (Q.850 cause) → reason.
+CAUSE_REASON = {17: "busy", 18: "no_answer", 19: "no_answer", 21: "declined", 20: "unavailable",
+                1: "unavailable", 3: "unavailable", 27: "unavailable", 34: "unavailable", 38: "unavailable"}
+# Why a kiosk → phone call ended before it was answered → what the kiosk is told.
+UNANSWERED_SIGNAL = {"no_answer": "missed"}  # anything else: decline
+OUT_ARGS = "kig-out"  # the appArgs that mark our own originated calls
 # What the kiosk says about a call → why it ended.
 SIGNAL_REASON = {"decline": "declined", "missed": "no_answer", "cancel": "ended", "hangup": "ended"}
 TALK_LEVEL = 400.0  # RMS of 16-bit samples above which the SIP side counts as talking
@@ -61,8 +74,11 @@ TALK_HANGOVER_S = 0.8
 class Call:
     id: str
     kiosk: Kiosk
-    channel: str
-    caller: str
+    channel: str  # the SIP side's channel ("" until an originated call has one)
+    caller: str  # the SIP side, as a label
+    direction: str = "in"  # in: phone → kiosk; out: kiosk → phone
+    peer_url: str = ""  # where the kiosk takes signals about this call
+    phone: str = ""  # out: the phone's extension
     state: str = "ringing"  # ringing → connecting → in_call → ended
     started: float = field(default_factory=time.time)
     answered: float | None = None
@@ -71,7 +87,8 @@ class Call:
     ext_channel: str = ""
     bridge: str = ""
     media: MediaLeg | None = None
-    ws: aiohttp.ClientWebSocketResponse | None = None
+    ws: Any = None  # the kiosk's audio socket: ours as client (in) or as server (out)
+    ws_ready: asyncio.Event = field(default_factory=asyncio.Event)
     outbox: asyncio.Queue[bytes | str | None] = field(default_factory=asyncio.Queue)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     talking: bool = False
@@ -81,6 +98,7 @@ class Call:
     def to_json(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "direction": self.direction,
             "kiosk": self.kiosk.name,
             "extension": self.kiosk.extra.get("extension", ""),
             "caller": self.caller,
@@ -96,6 +114,10 @@ def caller_label(channel: dict[str, Any]) -> str:
     if name and number and name != number:
         return f"{name} ({number})"
     return name or number or "Phone"
+
+
+def _host(address: str) -> str:
+    return f"[{address}]" if ":" in address and not address.startswith("[") else address
 
 
 def local_address_towards(host: str) -> str:
@@ -133,13 +155,17 @@ class CallManager:
         self.by_channel: dict[str, Call] = {}
         self.ext_channels: dict[str, Call] = {}
         self.history: list[dict[str, Any]] = []
-        # Channels that left Stasis before their call was registered.
+        # Channels that left Stasis before their call was registered, and the
+        # cause they were destroyed with.
         self._gone: dict[str, float] = {}
+        self._gone_cause: dict[str, int] = {}
         self._verifier = TokenVerifier(roster.key)
         self._http: aiohttp.ClientSession | None = None
         self._ws_http: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
         self.port = 0
+        self.phones: Any = None  # PhoneDirectory, when kiosks may call phones
+        self.out_ring_timeout = min(ring_timeout, 30.0)  # a calling kiosk gives up at 30 s + 10
         roster.on_change(self.assign_extensions)
         self.assign_extensions()
 
@@ -203,6 +229,7 @@ class CallManager:
             "listener_port": self.port,
             "media_port": self.media_server.port,
             "calls": [c.to_json() for c in self.calls.values()],
+            "phones": self.phones.snapshot() if self.phones else [],
             "history": self.history[-10:],
         }
 
@@ -240,7 +267,7 @@ class CallManager:
             return web.json_response({"ok": False, "error": "no such call"}, status=403)
         action = str((body or {}).get("action") or "")
         if action == "answer":
-            if c.state != "ringing":
+            if c.direction != "in" or c.state != "ringing":
                 return web.json_response({"ok": False, "error": "not calling"}, status=403)
             c.state = "connecting"
             if c.timer:
@@ -269,13 +296,26 @@ class CallManager:
                 # channels created over ARI by anyone else carry no target.
                 _LOG.debug("ignoring %s: entered %s without a target", name, self.ari and self.ari.app)
                 return
+            if str(args[0]) == OUT_ARGS:
+                c = self.calls.get(str(args[1]) if len(args) > 1 else "")
+                if c is not None and c.direction == "out":
+                    c.channel = cid
+                    self.by_channel[cid] = c
+                    self._spawn(c, self._phone_answered(c))
+                else:  # its kiosk gave up meanwhile
+                    asyncio.ensure_future(self._hangup_quietly(cid))
+                return
             target = str(args[0])
-            asyncio.ensure_future(self.place(cid, target, caller_label(channel)))
+            number = str((channel.get("caller") or {}).get("number") or "")
+            asyncio.ensure_future(self.place(cid, target, caller_label(channel), number))
         elif kind in ("StasisEnd", "ChannelDestroyed"):
             c = self.by_channel.get(cid)
             if c is not None:
                 c.sip_gone = True
-                asyncio.ensure_future(self.end(c, "ended"))
+                reason = "ended"
+                if c.direction == "out" and c.state == "ringing":
+                    reason = CAUSE_REASON.get(int(event.get("cause") or 0), "declined")
+                asyncio.ensure_future(self.end(c, reason))
                 return
             c = self.ext_channels.get(cid)
             if c is not None:
@@ -284,11 +324,14 @@ class CallManager:
                 return
             now = time.monotonic()
             self._gone = {k: t for k, t in self._gone.items() if now - t < 120}
+            self._gone_cause = {k: v for k, v in self._gone_cause.items() if k in self._gone}
             self._gone[cid] = now
+            if kind == "ChannelDestroyed":
+                self._gone_cause[cid] = int(event.get("cause") or 0)
 
     # ── placing a call ───────────────────────────────────────────────
 
-    async def place(self, channel: str, target: str, caller: str) -> None:
+    async def place(self, channel: str, target: str, caller: str, number: str = "") -> None:
         assert self.ari is not None
         k = self.kiosk_for(target)
         if k is None:
@@ -305,7 +348,7 @@ class CallManager:
         if channel in self._gone:
             _LOG.info("%s hung up before %s was rung", caller, k.name)
             return
-        c = Call(id=self._call_id(), kiosk=k, channel=channel, caller=caller)
+        c = Call(id=self._call_id(), kiosk=k, channel=channel, caller=caller, peer_url=k.intercom_url)
         self.calls[c.id] = c
         self.by_channel[channel] = c
         try:
@@ -316,7 +359,7 @@ class CallManager:
         status, code = await self._post(
             c,
             "/api/intercom/call",
-            {"call": c.id, "kind": "call", "from": self._self_info(k, caller)},
+            {"call": c.id, "kind": "call", "from": self._self_info(k, caller, number)},
         )
         if c.state == "ended":  # the caller gave up while we asked
             if status in ("ringing", "auto"):
@@ -352,17 +395,29 @@ class CallManager:
 
     # ── the media ────────────────────────────────────────────────────
 
+    async def _bridge_media(self, c: Call) -> None:
+        """Asterisk's side of the audio: an AudioSocket leg bridged to the call."""
+        assert self.ari is not None
+        c.media = MediaLeg(c.id, lambda frame: self._from_sip(c, frame))
+        self.media_server.expect(c.media)
+        ext = await self.ari.external_media(self.media_server.host, self.media_server.port, c.media.uuid)
+        c.ext_channel = str(ext["id"])
+        self.ext_channels[c.ext_channel] = c
+        await asyncio.wait_for(c.media.connected.wait(), 5)
+        c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
+
+    def _go_live(self, c: Call) -> None:
+        c.state, c.answered = "in_call", time.time()
+        a, b = (c.caller, c.kiosk.name) if c.direction == "in" else (c.kiosk.name, c.caller)
+        _LOG.info("%s and %s connected", a, b)
+        c.outbox.put_nowait('{"type":"talk","on":false}')
+        self._spawn(c, self._send_loop(c))
+
     async def _connect(self, c: Call) -> None:
         assert self.ari is not None
         try:
             await self.ari.answer(c.channel)
-            c.media = MediaLeg(c.id, lambda frame: self._from_sip(c, frame))
-            self.media_server.expect(c.media)
-            ext = await self.ari.external_media(self.media_server.host, self.media_server.port, c.media.uuid)
-            c.ext_channel = str(ext["id"])
-            self.ext_channels[c.ext_channel] = c
-            await asyncio.wait_for(c.media.connected.wait(), 5)
-            c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
+            await self._bridge_media(c)
             token = issue_token(self.roster.key, c.id, self.state.gateway_id)
             base = c.kiosk.intercom_url.replace("http", "ws", 1)
             c.ws = await self.ws_http.ws_connect(
@@ -375,10 +430,7 @@ class CallManager:
         if c.state == "ended":  # hung up while we were connecting
             await c.ws.close()
             return
-        c.state, c.answered = "in_call", time.time()
-        _LOG.info("%s and %s connected", c.caller, c.kiosk.name)
-        c.outbox.put_nowait('{"type":"talk","on":false}')
-        self._spawn(c, self._send_loop(c))
+        self._go_live(c)
         self._spawn(c, self._receive_loop(c))
 
     def _from_sip(self, c: Call, frame: bytes) -> None:
@@ -433,7 +485,9 @@ class CallManager:
                 except (ConnectionError, RuntimeError):
                     pass
             elif previous == "ringing":
-                await self._post(c, f"/api/intercom/call/{c.id}", {"action": "cancel"})
+                # We rang the kiosk: cancel. The kiosk rang a phone: say why not.
+                action = "cancel" if c.direction == "in" else UNANSWERED_SIGNAL.get(reason, "decline")
+                await self._post(c, f"/api/intercom/call/{c.id}", {"action": action})
             elif previous in ("connecting", "in_call"):
                 await self._post(c, f"/api/intercom/call/{c.id}", {"action": "hangup"})
         c.outbox.put_nowait(None)
@@ -449,7 +503,7 @@ class CallManager:
                 steps.append(lambda: ari.destroy_bridge(c.bridge))
             if c.ext_channel:
                 steps.append(lambda: ari.hangup(c.ext_channel))
-            if not c.sip_gone:
+            if not c.sip_gone and c.channel:
                 steps.append(lambda: ari.hangup(c.channel, HANGUP_CAUSE.get(reason, "normal")))
             for step in steps:  # created one at a time, so none is left unawaited
                 try:
@@ -463,9 +517,150 @@ class CallManager:
             if t is not asyncio.current_task():
                 t.cancel()
         length = f", {time.time() - c.answered:.0f}s" if c.answered else ""
-        _LOG.info("call %s → %s ended: %s%s", c.caller, c.kiosk.name, reason, length)
+        a, b = (c.caller, c.kiosk.name) if c.direction == "in" else (c.kiosk.name, c.caller)
+        _LOG.info("call %s → %s ended: %s%s", a, b, reason, length)
         self.history.append({**c.to_json(), "at": time.time()})
         del self.history[:-20]
+
+    # ── kiosk → phone ────────────────────────────────────────────────
+    # What each phone's own listener (phones.py) does, as a kiosk would.
+
+    def _calls_with(self, phone: Any) -> list[Call]:
+        return [c for c in self.calls.values() if c.direction == "out" and c.phone == phone.resource]
+
+    async def phone_identity(self, phone: Any, _: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "id": phone.id,
+                "name": phone.label,
+                "version": __version__,
+                "enabled": bool(self.ari and self.ari.connected),
+                "key": self.roster.key_fingerprint,
+                "dnd": False,
+                "endpoint": {"port": phone.port, "tls": False},
+            }
+        )
+
+    async def phone_call(self, phone: Any, request: web.Request) -> web.Response:
+        """A kiosk calls this phone: ring it over ARI, answer ``ringing`` at once."""
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        call_id = str(body.get("call") or "")
+        frm = body.get("from") if isinstance(body.get("from"), dict) else {}
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        if not call_id or not frm.get("id"):
+            return web.json_response({"error": "call and from required"}, status=400)
+        self._verifier.key = self.roster.key
+        if not self._verifier.verify(token, call_id):
+            return web.json_response({"status": "key"}, status=403)
+        if frm.get("tls"):
+            return web.json_response({"status": "tls"}, status=409)
+        if body.get("kind") == "broadcast":
+            return web.json_response({"status": "refused"})  # Announce to all skips phones
+        if self.ari is None or not self.ari.connected:
+            return web.json_response({"status": "off"})
+        if phone.busy or self._calls_with(phone) or call_id in self.calls:
+            return web.json_response({"status": "busy"})
+        k = self.roster.kiosks.get(str(frm["id"]))
+        address = request.remote or str(frm.get("address") or "")
+        port = int(frm.get("port") or 2324)
+        if k is None:  # a kiosk the gateway has not heard of yet
+            k = Kiosk(key=str(frm["id"]), address=address, port=port, id=str(frm["id"]))
+            k.name = str(frm.get("name") or address)
+        c = Call(
+            id=call_id, kiosk=k, channel="", caller=phone.label, direction="out",
+            peer_url=f"http://{_host(address)}:{port}", phone=phone.resource,
+        )
+        self.calls[c.id] = c
+        _LOG.info("%s calling %s (%s)", k.name, phone.label, c.id)
+        self._spawn(c, self._dial_phone(c, phone))
+        return web.json_response({"status": "ringing"})
+
+    async def _dial_phone(self, c: Call, phone: Any) -> None:
+        assert self.ari is not None
+        ext = c.kiosk.extra.get("extension", "")
+        caller_id = f'"{c.kiosk.name}" <{ext}>' if ext else f'"{c.kiosk.name}"'
+        try:
+            ch = await self.ari.originate(
+                f"PJSIP/{phone.resource}", f"{OUT_ARGS},{c.id}", caller_id, int(self.out_ring_timeout)
+            )
+        except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
+            _LOG.warning("could not ring %s: %s", phone.label, err)
+            await self.end(c, "unavailable")
+            return
+        cid = str((ch or {}).get("id") or "")
+        if c.state == "ended":  # the kiosk gave up while Asterisk dialled
+            await self._hangup_quietly(cid)
+            return
+        if cid and not c.channel:
+            c.channel = cid
+            self.by_channel[cid] = c
+        if cid in self._gone_cause:  # refused before we had its id
+            c.sip_gone = True
+            await self.end(c, CAUSE_REASON.get(self._gone_cause[cid], "declined"))
+            return
+        loop = asyncio.get_running_loop()
+        c.timer = loop.call_later(
+            self.out_ring_timeout + 5, lambda: asyncio.ensure_future(self._ring_timeout(c))
+        )
+
+    async def _phone_answered(self, c: Call) -> None:
+        """The phone picked up: bridge its audio, tell the kiosk, take its socket."""
+        if c.state != "ringing":
+            return
+        c.state = "connecting"
+        if c.timer:
+            c.timer.cancel()
+        try:
+            await self._bridge_media(c)
+        except Exception as err:
+            _LOG.warning("connecting %s to %s failed: %s", c.kiosk.name, c.caller, err)
+            await self.end(c, "failed")
+            return
+        status, code = await self._post(c, f"/api/intercom/call/{c.id}", {"action": "answer"})
+        if c.state == "ended":
+            return
+        if code != 200:
+            _LOG.info("%s no longer takes the call (%s)", c.kiosk.name, code or status)
+            await self.end(c, "ended", tell_kiosk=False)
+            return
+        try:
+            await asyncio.wait_for(c.ws_ready.wait(), 10)
+        except TimeoutError:
+            _LOG.warning("%s did not open its audio socket", c.kiosk.name)
+            await self.end(c, "failed")
+
+    async def phone_signal(self, phone: Any, request: web.Request) -> web.Response:
+        return await self._signal(request)
+
+    async def phone_audio(self, phone: Any, request: web.Request) -> web.StreamResponse:
+        call_id = request.match_info["call"]
+        self._verifier.key = self.roster.key
+        c = self.calls.get(call_id)
+        if (
+            not self._verifier.verify(request.query.get("token", ""), call_id)
+            or c is None
+            or c.direction != "out"
+            or c.state != "connecting"
+        ):
+            return web.json_response({"error": "refused"}, status=403)
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
+        await ws.prepare(request)
+        c.ws = ws
+        c.ws_ready.set()
+        self._go_live(c)
+        await self._receive_loop(c)
+        return ws
+
+    async def _hangup_quietly(self, channel: str) -> None:
+        if self.ari is None or not channel:
+            return
+        try:
+            await self.ari.hangup(channel)
+        except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
+            _LOG.debug("hangup %s: %s", channel, err)
 
     # ── helpers ──────────────────────────────────────────────────────
 
@@ -480,10 +675,13 @@ class CallManager:
         CallManager._next += 1
         return f"{int(time.time() * 1000):x}-{CallManager._next:x}-kig"
 
-    def _self_info(self, k: Kiosk, caller: str) -> dict[str, Any]:
+    def _self_info(self, k: Kiosk, caller: str, number: str = "") -> dict[str, Any]:
         # The kiosk's call screen names whoever is in ``name``: the SIP caller.
+        # A caller the kiosks can call (an offered phone) gives its own id, so
+        # the kiosk's Call back after a missed call rings that phone.
+        phone = self.phones.phones.get(number) if self.phones and number else None
         return {
-            "id": self.state.gateway_id,
+            "id": phone.id if phone is not None and phone.runner is not None else self.state.gateway_id,
             "name": caller,
             "address": local_address_towards(k.address),
             "port": self.port,
@@ -494,7 +692,7 @@ class CallManager:
         token = issue_token(self.roster.key, c.id, self.state.gateway_id)
         try:
             async with self.http.post(
-                c.kiosk.intercom_url + path,
+                (c.peer_url or c.kiosk.intercom_url) + path,
                 json=body,
                 headers={"Authorization": f"Bearer {token}"},
             ) as r:
@@ -505,5 +703,5 @@ class CallManager:
                 status = str((data or {}).get("status") or "") if isinstance(data, dict) else ""
                 return status or ("ok" if r.status == 200 else "failed"), r.status
         except (aiohttp.ClientError, OSError, TimeoutError) as err:
-            _LOG.debug("POST %s%s: %s", c.kiosk.intercom_url, path, err)
+            _LOG.debug("POST %s%s: %s", c.peer_url or c.kiosk.intercom_url, path, err)
             return "unreachable", None

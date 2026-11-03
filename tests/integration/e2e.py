@@ -26,6 +26,7 @@ sys.path[:0] = [str(Path(__file__).parents[1]), str(Path(__file__).parents[2] / 
 from fakes import FakeKiosk, ints  # noqa: E402
 from kig.ari import Ari  # noqa: E402
 from kig.bridge import CallManager  # noqa: E402
+from kig.phones import PhoneDirectory  # noqa: E402
 from kig.probe import HttpProber  # noqa: E402
 from kig.protocol import FRAME_BYTES, SAMPLE_RATE  # noqa: E402
 from kig.roster import Roster  # noqa: E402
@@ -144,6 +145,43 @@ async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, l
         check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears Asterisk's 440 Hz tone")
 
 
+async def phone_call(kiosk: FakeKiosk, calls: CallManager, phones: PhoneDirectory, s, url,
+                     extension: str, label: str) -> None:
+    """A kiosk calls a SIP phone, as Kiosk Satellite does."""
+    for ev in (kiosk.out_open, kiosk.out_closed):
+        ev.clear()
+    kiosk.out_frames.clear()
+    kiosk.out_texts.clear()
+    phone = phones.phones[extension]
+    call_id = f"ci-{extension}"
+    status, body = await kiosk.place_call(phone.port, call_id)
+    check((status, body.get("status")) == (200, "ringing"),
+          f"{label}: the gateway rings {phone.label} ({body})")
+    check(await wait(lambda: kiosk.out_open.is_set(), 15),
+          f"{label}: the phone answered and the kiosk opened its audio socket")
+    note(f"{label}: signals at the kiosk: {[a for c, a in kiosk.signals if c == call_id]}")
+    pos = 0
+    for _ in range(int(9000 / 80)):
+        if kiosk.out_closed.is_set():
+            break
+        await kiosk.out_talk(tone(1000, pos, FRAME_BYTES // 2))
+        pos += FRAME_BYTES // 2
+        await asyncio.sleep(0.08)
+    check(await wait(lambda: kiosk.out_closed.is_set(), 15), f"{label}: the phone hung up")
+    check(any(json.loads(t).get("type") == "end" for t in kiosk.out_texts),
+          f"{label}: the kiosk was told the phone hung up")
+    check(await wait(lambda: not calls.calls, 5), f"{label}: the gateway cleaned the call up")
+    await asyncio.sleep(1)
+    async with s.get(f"{url}/ari/channels") as r:
+        left = await r.json()
+    check(not left, f"{label}: no channels left in Asterisk {[c['name'] for c in left]}")
+    if extension == "101":
+        heard = ints(b"".join(kiosk.out_frames[-25:]))
+        f, rms = frequency(heard, SAMPLE_RATE), level(heard)
+        note(f"{label}: kiosk heard {len(kiosk.out_frames)} frames; last 2 s: {f:.0f} Hz, RMS {rms:.0f}")
+        check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears the phone's 440 Hz tone")
+
+
 async def main(url: str, user: str, password: str) -> None:
     kiosk = FakeKiosk(KEY)
     await kiosk.start()
@@ -162,7 +200,25 @@ async def main(url: str, user: str, password: str) -> None:
 
     async with aiohttp.ClientSession(auth=aiohttp.BasicAuth(user, password)) as s:
         await one_call(s, url, kiosk, calls, "kig-ci-tone", "call 1 (phone → kiosk)")
-        await one_call(s, url, kiosk, calls, "kig-ci-rec", "call 2 (kiosk → phone)")
+        await one_call(s, url, kiosk, calls, "kig-ci-rec", "call 2 (phone → kiosk, recorded)")
+
+        phones = PhoneDirectory(
+            ari, roster, calls.state, None,
+            {"identity": calls.phone_identity, "call": calls.phone_call,
+             "signal": calls.phone_signal, "audio": calls.phone_audio},
+            listen_host="127.0.0.1",
+        )
+        calls.phones = phones
+        await phones.refresh()
+        note("phones Asterisk has: " + ", ".join(
+            f"{p['extension']} {p['name']} {p['state']}{' offered' if p['offered'] else ''}"
+            for p in phones.snapshot()))
+        check({"101", "102"} <= {p["extension"] for p in phones.snapshot() if p["offered"]},
+              "the test phones 101 and 102 are offered to kiosks")
+        check(phones.phones["101"].label == "CI Tone Phone (101)", "phones are named by their caller ID")
+        await phone_call(kiosk, calls, phones, s, url, "101", "call 3 (kiosk → phone 101)")
+        await phone_call(kiosk, calls, phones, s, url, "102", "call 4 (kiosk → phone 102, recorded)")
+        await phones.close()
     flush_report()
 
     stop.set()
@@ -190,10 +246,6 @@ def analyse_recording(path: str) -> None:
 if __name__ == "__main__":
     if sys.argv[1] == "--recording":
         for path in sys.argv[2:]:
-            try:
-                analyse_recording(path)
-            except SystemExit:
-                if path == sys.argv[-1]:
-                    raise
+            analyse_recording(path)  # each must hear the kiosk's 1000 Hz
     else:
         asyncio.run(main(*sys.argv[1:4]))
