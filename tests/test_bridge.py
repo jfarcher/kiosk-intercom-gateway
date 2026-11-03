@@ -274,3 +274,17 @@ async def test_404_explains_itself():
         await asyncio.wait_for(task, 5)
         await ari.close()
         await fake.close()
+
+
+@pytest.mark.parametrize("delay", [0.0, 0.01, 0.03, 0.06])
+async def test_caller_hangs_up_while_connecting(rig, delay):
+    """The SIP side hangs up just as the kiosk answers: whatever stage the
+    connection reached, the kiosk's socket must end up closed, nothing left over."""
+    call = await rig.ringing()
+    assert await rig.kiosk.answer(call) == 200
+    await asyncio.sleep(delay)
+    rig.fake_ari.caller_hangs_up("sip-1")
+    await until(lambda: not rig.calls.calls, what="the call to end")
+    await asyncio.sleep(0.3)
+    assert rig.kiosk.ws is None or rig.kiosk.ws.closed
+    assert not [t for t in asyncio.all_tasks() if t.get_coro().__qualname__ == "CallManager._connect"]

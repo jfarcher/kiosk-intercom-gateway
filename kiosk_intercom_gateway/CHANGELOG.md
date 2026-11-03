@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Fix a phone hanging up at the moment a kiosk answers. If it landed while the gateway was still
+  connecting the kiosk's audio, the connection was cut off partway and could leave the kiosk's audio
+  socket open. Connecting now always finishes and closes the socket itself.
+
 ## 0.4.0
 
 - **Call events.** `kiosk_intercom_gateway_call` fires as every call rings, is answered and ends.

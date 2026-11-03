@@ -92,6 +92,9 @@ class Call:
     ws_ready: asyncio.Event = field(default_factory=asyncio.Event)
     outbox: asyncio.Queue[bytes | str | None] = field(default_factory=asyncio.Queue)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    # Tasks that must run to the end: cancelled mid-connect, a socket the
+    # kiosk already accepted would be left open. They see the call ended.
+    protected: set[asyncio.Task[Any]] = field(default_factory=set)
     ringback: str = ""  # a playback on an already answered SIP side (the call action)
     talking: bool = False
     talk_seen: float = 0.0
@@ -276,7 +279,7 @@ class CallManager:
             c.state = "connecting"
             if c.timer:
                 c.timer.cancel()
-            self._spawn(c, self._connect(c))
+            self._spawn(c, self._connect(c), protect=True)
             return web.json_response({"ok": True})
         reason = SIGNAL_REASON.get(action)
         if reason is None:
@@ -305,7 +308,7 @@ class CallManager:
                 if c is not None and c.direction == "out":
                     c.channel = cid
                     self.by_channel[cid] = c
-                    self._spawn(c, self._phone_answered(c))
+                    self._spawn(c, self._phone_answered(c), protect=True)
                 else:  # its kiosk gave up meanwhile
                     asyncio.ensure_future(self._hangup_quietly(cid))
                 return
@@ -543,7 +546,7 @@ class CallManager:
         self.by_channel.pop(c.channel, None)
         self.ext_channels.pop(c.ext_channel, None)
         for t in c.tasks:
-            if t is not asyncio.current_task():
+            if t is not asyncio.current_task() and t not in c.protected:
                 t.cancel()
         length = f", {time.time() - c.answered:.0f}s" if c.answered else ""
         a, b = (c.caller, c.kiosk.name) if c.direction == "in" else (c.kiosk.name, c.caller)
@@ -770,10 +773,13 @@ class CallManager:
 
     # ── helpers ──────────────────────────────────────────────────────
 
-    def _spawn(self, c: Call, coro: Any) -> None:
+    def _spawn(self, c: Call, coro: Any, protect: bool = False) -> None:
         task = asyncio.ensure_future(coro)
         c.tasks.add(task)
         task.add_done_callback(c.tasks.discard)
+        if protect:
+            c.protected.add(task)
+            task.add_done_callback(c.protected.discard)
 
     _next = 0
 

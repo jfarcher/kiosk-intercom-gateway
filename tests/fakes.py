@@ -105,6 +105,10 @@ class FakeKiosk:
             return web.json_response({"ok": False}, status=403)
         action = (await request.json())["action"]
         self.signals.append((call, action))
+        if action in ("hangup", "cancel") and call in self.calls and self.ws is not None:
+            # As the kiosk does (_signal → _finish): the call ends, its socket closes.
+            t = asyncio.ensure_future(self.ws.close())
+            self._tasks.add(t)
         if action == "answer" and call in self.outgoing:
             # As the kiosk does (intercom_manager _signal → _connect): open the
             # audio socket to the callee that answered.
