@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 import sys
@@ -51,6 +52,19 @@ def level(samples: list[int]) -> float:
 
 
 REPORT: list[str] = []
+# The gateway's own log, attached to a failure.
+LOG_LINES: list[str] = []
+
+
+class _Keep(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        LOG_LINES.append(f"{record.relativeCreated / 1000:8.2f} {record.name}: {record.getMessage()}"[:300])
+        del LOG_LINES[:-60]
+
+
+_handler = _Keep()
+logging.getLogger("kig").addHandler(_handler)
+logging.getLogger("kig").setLevel(logging.DEBUG)
 
 
 def flush_report() -> None:
@@ -74,6 +88,8 @@ def check(ok: bool, what: str) -> None:
         if os.environ.get("GITHUB_ACTIONS"):
             print(f"::error title=e2e::{line}", flush=True)
         flush_report()
+        if os.environ.get("GITHUB_ACTIONS"):  # the gateway's log, its own annotation
+            print("::notice title=gateway log::" + "%0A".join(LOG_LINES[-45:]), flush=True)
         raise SystemExit(1)
 
 
@@ -202,7 +218,12 @@ async def click_to_call(kiosk: FakeKiosk, calls: CallManager, s, url, label: str
     await asyncio.sleep(1)  # ringback on the phone meanwhile
     check(await kiosk.answer() == 200, f"{label}: the kiosk answered")
     await asyncio.wait_for(kiosk.ws_open.wait(), 10)
-    check(await wait(lambda: kiosk.ws_closed.is_set(), 15), f"{label}: the phone hung up")
+    closed = await wait(lambda: kiosk.ws_closed.is_set(), 15)
+    if not closed:
+        async with s.get(f"{url}/ari/channels") as r:
+            note(f"{label}: channels now: {[(c['name'], c['state']) for c in await r.json()]}")
+        note(f"{label}: gateway calls now: {[(c.id, c.state, c.channel) for c in calls.calls.values()]}")
+    check(closed, f"{label}: the phone hung up")
     heard = ints(b"".join(kiosk.frames[-20:]))
     f, rms = frequency(heard, SAMPLE_RATE), level(heard)
     note(f"{label}: kiosk heard {len(kiosk.frames)} frames; last 1.6 s: {f:.0f} Hz, RMS {rms:.0f}")
