@@ -145,6 +145,13 @@ class Ari:
     async def add_to_bridge(self, bridge: str, *channels: str) -> None:
         await self.request("POST", f"/bridges/{bridge}/addChannel", channel=",".join(channels))
 
+    async def remove_from_bridge(self, bridge: str, *channels: str) -> None:
+        try:
+            await self.request("POST", f"/bridges/{bridge}/removeChannel", channel=",".join(channels))
+        except AriError as err:
+            if err.status not in (404, 422):  # bridge gone, or channel no longer in it
+                raise
+
     async def destroy_bridge(self, bridge: str) -> None:
         try:
             await self.request("DELETE", f"/bridges/{bridge}")

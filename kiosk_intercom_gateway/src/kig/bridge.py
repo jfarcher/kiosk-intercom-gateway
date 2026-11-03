@@ -96,6 +96,7 @@ class Call:
     # kiosk already accepted would be left open. They see the call ended.
     protected: set[asyncio.Task[Any]] = field(default_factory=set)
     ringback: str = ""  # a playback on an already answered SIP side (the call action)
+    hold_bridge: str = ""  # where that ringback plays until the kiosk answers
     talking: bool = False
     talk_seen: float = 0.0
     timer: asyncio.TimerHandle | None = None
@@ -368,10 +369,13 @@ class CallManager:
         try:
             if answered:
                 # A phone that picked up a call action hears ringback until the
-                # kiosk answers: played into its call bridge, which the kiosk's
-                # audio joins later (see Ari.play_to_bridge for why not the channel).
-                c.bridge = await self.ari.bridge(channel)
-                c.ringback = await self.ari.play_to_bridge(c.bridge, "tone:ring")
+                # kiosk answers, played into a holding bridge of its own (see
+                # Ari.play_to_bridge for why not on the channel). The call itself
+                # gets a fresh bridge with both sides at once, as every other call:
+                # an AudioSocket joining the ringback's bridge later was at times
+                # never fed audio (simple_bridge, seen in CI).
+                c.hold_bridge = await self.ari.bridge(channel)
+                c.ringback = await self.ari.play_to_bridge(c.hold_bridge, "tone:ring")
             else:
                 await self.ari.ring(channel)
         except AriError as err:
@@ -431,10 +435,19 @@ class CallManager:
         c.ext_channel = str(ext["id"])
         self.ext_channels[c.ext_channel] = c
         await asyncio.wait_for(c.media.connected.wait(), 5)
-        if c.bridge:  # the call action's bridge, already holding the phone
-            await self.ari.add_to_bridge(c.bridge, c.ext_channel)
-        else:
-            c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
+        await self._release_hold(c)
+        c.bridge = await self.ari.bridge(c.channel, c.ext_channel)
+
+    async def _release_hold(self, c: Call) -> None:
+        """The call action's ringback over: the phone leaves its holding bridge."""
+        assert self.ari is not None
+        if c.ringback:
+            await self.ari.stop_playback(c.ringback)
+            c.ringback = ""
+        if c.hold_bridge:
+            hold, c.hold_bridge = c.hold_bridge, ""
+            await self.ari.remove_from_bridge(hold, c.channel)
+            await self.ari.destroy_bridge(hold)
 
     def _go_live(self, c: Call) -> None:
         c.state, c.answered = "in_call", time.time()
@@ -447,9 +460,6 @@ class CallManager:
     async def _connect(self, c: Call) -> None:
         assert self.ari is not None
         try:
-            if c.ringback:
-                await self.ari.stop_playback(c.ringback)
-                c.ringback = ""
             await self.ari.answer(c.channel)
             await self._bridge_media(c)
             token = issue_token(self.roster.key, c.id, self.state.gateway_id)
@@ -512,9 +522,9 @@ class CallManager:
         previous, c.state, c.reason = c.state, "ended", reason
         if c.timer:
             c.timer.cancel()
-        if c.ringback and self.ari is not None and not c.sip_gone:
+        if (c.ringback or c.hold_bridge) and self.ari is not None:
             try:
-                await self.ari.stop_playback(c.ringback)
+                await self._release_hold(c)
             except (AriError, aiohttp.ClientError, OSError, TimeoutError):
                 pass
         if tell_kiosk:

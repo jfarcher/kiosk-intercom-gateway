@@ -60,18 +60,21 @@ async def test_call_action_rings_the_phone_then_the_kiosk(rig, events):  # noqa:
     frm = rig.kiosk.calls[rig.kiosk.last_call()]["from"]
     assert frm["name"] == "Alice (101)" and frm["id"] == alice(rig).id  # shows the phone, can call back
     plays = rig.fake_ari.calls_to("POST", "/bridges/bridge-1/play")
-    assert plays and plays[0]["media"] == "tone:ring"  # the phone hears ringback meanwhile, in its bridge
+    assert plays and plays[0]["media"] == "tone:ring"  # ringback, in a holding bridge
     assert rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")[0]["channel"] == o["id"]
     assert not rig.fake_ari.calls_to("POST", f"/channels/{o['id']}/play")  # never on the channel
 
     await rig.kiosk.answer()
     await asyncio.wait_for(rig.kiosk.ws_open.wait(), 3)
-    await until(lambda: rig.fake_ari.calls_to("DELETE", "/playbacks/"), what="ringback stopped")
-    await until(lambda: len(rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")) == 2,
-                what="the kiosk's audio joining the same bridge")
-    assert rig.fake_ari.calls_to("POST", "/bridges/bridge-1/addChannel")[1]["channel"].startswith("ext-")
-    created = [q for q in rig.fake_ari.calls_to("POST", "/bridges") if q.get("type") == "mixing"]
-    assert len(created) == 1  # one bridge, not a second
+    await until(lambda: rig.fake_ari.calls_to("POST", "/bridges/bridge-2/addChannel"), what="the call bridge")
+    log = rig.fake_ari.requests
+
+    def at(method, path):  # where in Asterisk's request log
+        return next(i for i, (m, p, _) in enumerate(log) if m == method and p.startswith(path))
+    assert (at("DELETE", "/ari/playbacks/") < at("POST", "/ari/bridges/bridge-1/removeChannel")
+            < at("DELETE", "/ari/bridges/bridge-1") < at("POST", "/ari/bridges/bridge-2/addChannel"))
+    sip, ext = rig.fake_ari.calls_to("POST", "/bridges/bridge-2/addChannel")[0]["channel"].split(",")
+    assert sip == o["id"] and ext.startswith("ext-")  # both sides at once, as every other call
 
 
 @pytest.mark.parametrize("command,error", [

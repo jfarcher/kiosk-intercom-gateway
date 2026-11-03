@@ -280,6 +280,7 @@ class FakeAri:
         r.add_post("/ari/bridges", self._bridge)
         r.add_post("/ari/bridges/{id}/addChannel", self._record)
         r.add_post("/ari/bridges/{id}/play", self._bridge_play)
+        r.add_post("/ari/bridges/{id}/removeChannel", self._record)
         r.add_delete("/ari/bridges/{id}", self._record)
         r.add_delete("/ari/playbacks/{id}", self._record)
         self.server = TestServer(app, host="127.0.0.1")
@@ -397,7 +398,8 @@ class FakeAri:
 
     async def _bridge(self, request: web.Request) -> web.Response:
         self._log(request)
-        return web.json_response({"id": "bridge-1", "bridge_type": "mixing"})
+        self.bridges = getattr(self, "bridges", 0) + 1
+        return web.json_response({"id": f"bridge-{self.bridges}", "bridge_type": "mixing"})
 
     async def _external_media(self, request: web.Request) -> web.Response:
         self._log(request)
