@@ -1,11 +1,32 @@
+<p align="center"><img src="kiosk_intercom_gateway/logo.png" alt="Kiosk Intercom" width="250"></p>
+
 # Kiosk Intercom Gateway
 
-A Home Assistant app that joins the [Kiosk Satellite](https://github.com/jxlarrea/kiosk-satellite)
-intercom from the outside, connecting the kiosks and the SIP phones on Asterisk both ways.
+A Home Assistant app that connects [Kiosk Satellite](https://github.com/jxlarrea/kiosk-satellite)'s
+intercom to the SIP phones on [Asterisk](https://github.com/TECH7Fox/asterisk-hass-addons), both ways:
 
-**Status: 0.4.0.** Dial a kiosk's extension and it rings like an intercom call. Pick a phone in a
-kiosk's Call list and it rings through Asterisk. Audio is two-way 16 kHz in both directions.
-Calls fire Home Assistant events, can be started and ended from automations, and show as sensors.
+- **Phones call kiosks.** Every kiosk gets an extension (801, 802, …). Dial it and the kiosk rings
+  like an intercom call, showing who's calling.
+- **Kiosks call phones.** Registered phones appear in every kiosk's **Call a kiosk** list.
+- **Automations.** Calls fire Home Assistant events, can be started and ended from automations,
+  and show as sensors.
+
+Audio is two-way 16 kHz. Nothing changes on the kiosks: the gateway speaks their intercom protocol.
+
+<p align="center"><img src="assets/screenshots/status-page.png" alt="The status page: Asterisk connection, a live call, the phones kiosks can call, and a kiosk with its extension" width="640"></p>
+
+## Quick start
+
+1. Add this repository to Home Assistant: **Settings → Apps → store → ⋮ → Repositories** →
+   `https://github.com/jfarcher/kiosk-intercom-gateway`, then install **Kiosk Intercom Gateway**.
+2. Start it, open **Kiosk Intercom** in the sidebar, and paste the kiosks' **Intercom key**
+   (any kiosk: Settings → Intercom). Your kiosks show **Ready** with their extensions.
+3. For calls, install the **Asterisk** app and follow the **Set up Asterisk** card on the status
+   page. It has the two config files ready to copy: a 6-line `ari.conf` and the dialplan.
+4. Pick which phones the kiosks can call on the **Phones** card.
+
+Full documentation is in [DOCS.md](kiosk_intercom_gateway/DOCS.md), also shown on the app's
+Documentation tab.
 
 ## What it does
 
@@ -39,18 +60,24 @@ Calls fire Home Assistant events, can be started and ended from automations, and
   Asterisk connection, live and recent calls, and setup steps. It also publishes
   `sensor.kiosk_intercom_gateway_kiosks`.
 
-## Install
+## Automations
 
-1. In Home Assistant go to **Settings → Apps** (formerly Add-ons) **→ store → ⋮ → Repositories**
-   and add `https://github.com/jfarcher/kiosk-intercom-gateway`.
-2. Install **Kiosk Intercom Gateway**.
-3. Start the app and open **Kiosk Intercom** in the sidebar.
-4. Paste the **Intercom key** from any kiosk (Settings → Intercom) and Save.
+<p align="center"><img src="assets/screenshots/automations.png" alt="The automations card with ready-to-copy YAML" width="640"></p>
+
+The status page's **Use calls in automations** card has the YAML for the call events, the `call`
+and `hangup` actions and the sensors, filled in with your own app slug, kiosks and phones.
+
+## Requirements
 
 Every kiosk needs **Remote management** and **Find other kiosks** turned on, as for the
 intercom itself. For calls, set up the [Asterisk app](https://github.com/TECH7Fox/asterisk-hass-addons)
 as the app's [documentation](kiosk_intercom_gateway/DOCS.md#2-connect-to-asterisk) describes:
 one `ari.conf` and three dialplan lines.
+
+Runs on amd64 and aarch64 Home Assistant OS installs. Tested with Kiosk Satellite 2026.10–11 and the
+Asterisk app 6.3 (Asterisk 22.11); CI places real calls through that Asterisk image on every change.
+The intercom wire is internal to Kiosk Satellite, so a future Kiosk Satellite release could need an
+update here.
 
 ## How the intercom works
 
