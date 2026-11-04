@@ -120,10 +120,10 @@ async def test_call_answer_audio_both_ways_and_kiosk_hangs_up(rig):
     t0 = loop.time()
     await rig.kiosk.talk(spoken[:FRAME_BYTES])
     await rig.kiosk.talk(spoken[FRAME_BYTES:])
-    await until(lambda: len(sock.audio()) >= 8, what="audio at Asterisk")
+    await until(lambda: len(sock.voice()) >= 8, what="audio at Asterisk")
     assert loop.time() - t0 >= 0.12  # paced, not one burst
-    assert all(len(p) == CHUNK_BYTES for p in sock.audio()[:8])
-    assert ints(b"".join(sock.audio()[:8])) == ints(spoken)
+    assert all(len(p) == CHUNK_BYTES for p in sock.voice()[:8])
+    assert ints(b"".join(sock.voice()[:8])) == ints(spoken)
 
     await rig.kiosk.hang_up()
     await until(lambda: not rig.calls.calls, what="the call to end")

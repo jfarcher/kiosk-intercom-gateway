@@ -54,10 +54,10 @@ class MediaLeg:
     of Asterisk's audio; :meth:`send_frame` takes kiosk audio, paced out as
     one 20 ms message per tick."""
 
-    def __init__(self, call_id: str, on_frame: Callable[[bytes], None], silence: bool = False) -> None:
+    def __init__(self, call_id: str, on_frame: Callable[[bytes], None], silence: bool = True) -> None:
         self.call_id = call_id
-        # Fill gaps with silence: a leg nothing ever talks into (an announcement)
-        # would otherwise send Asterisk no frames at all, and the bridge stalls.
+        # Fill gaps with silence: with no frames from its AudioSocket leg Asterisk's
+        # side of the bridge stalls (a kiosk only listening, an announcement).
         self.silence = silence
         self.uuid = str(uuid.uuid4())
         self.on_frame = on_frame
@@ -114,16 +114,18 @@ class MediaLeg:
             await asyncio.sleep(max(0.0, due - loop.time()))
             if loop.time() - due > 0.2:  # fell far behind (suspended): resync
                 due = loop.time()
-            if not started and len(self._queue) < 2 and not self.silence:  # a 40 ms jitter buffer
-                continue
-            started = bool(self._queue)
-            if self._queue or self.silence:
-                frame = self._queue.popleft() if self._queue else SILENCE
-                try:
-                    self._writer.write(message(KIND_SLIN16, frame))
-                    self.sent += 1
-                except (ConnectionError, RuntimeError):
-                    return
+            if len(self._queue) >= 2 or (started and self._queue):  # a 40 ms jitter buffer
+                frame, started = self._queue.popleft(), True
+            else:
+                started = False
+                if not self.silence:
+                    continue
+                frame = SILENCE
+            try:
+                self._writer.write(message(KIND_SLIN16, frame))
+                self.sent += 1
+            except (ConnectionError, RuntimeError):
+                return
 
     async def close(self) -> None:
         for t in self._tasks:

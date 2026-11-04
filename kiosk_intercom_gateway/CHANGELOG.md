@@ -8,6 +8,9 @@
   with Accept announcements off are skipped. You hear a beep once the kiosks are listening.
 - The `call` action with `kiosk: all` rings a phone, then announces from it once picked up.
 - New option: **Announce to all number** (800). Kiosks are never given it.
+- Fix: a call could go silent both ways when the kiosk wasn't talking (Push to talk with the button
+  up, say). The gateway now sends Asterisk silence in the gaps, which it needs to keep the call's
+  audio moving.
 
 ## 0.4.3
 

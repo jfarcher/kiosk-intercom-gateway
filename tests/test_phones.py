@@ -116,8 +116,8 @@ async def test_kiosk_calls_phone_answer_audio_and_phone_hangs_up(rig):
 
     said = le_samples(9000, 320 * 4)
     await rig.kiosk.out_talk(said[:FRAME_BYTES])
-    await until(lambda: len(sock.audio()) >= 4, what="kiosk audio at the phone")
-    assert ints(b"".join(sock.audio()[:4])) == ints(said[: 4 * CHUNK_BYTES])
+    await until(lambda: len(sock.voice()) >= 4, what="kiosk audio at the phone")
+    assert ints(b"".join(sock.voice()[:4])) == ints(said[: 4 * CHUNK_BYTES])
 
     rig.fake_ari.caller_hangs_up(o["id"])
     await asyncio.wait_for(rig.kiosk.out_closed.wait(), 3)

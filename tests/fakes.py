@@ -244,6 +244,12 @@ class FakeAudioSocket:
     def audio(self) -> list[bytes]:
         return [p for k, p in self.messages if k == 0x12]
 
+    def voice(self) -> list[bytes]:
+        """audio() from the first non-silent frame: the gateway fills gaps with silence."""
+        frames = self.audio()
+        first = next((i for i, p in enumerate(frames) if any(p)), len(frames))
+        return frames[first:]
+
     def send(self, le_pcm: bytes) -> None:
         assert self.writer is not None
         self.writer.write(struct.pack("!BH", 0x12, len(le_pcm)) + le_pcm)
