@@ -121,12 +121,6 @@ class Ari:
             timeout=timeout,
         )
 
-    async def play(self, channel: str, media: str) -> str:
-        """``media`` on one channel. Only for something short: until it ends it
-        holds up the channel's other commands (see play_to_bridge)."""
-        playback = await self.request("POST", f"/channels/{channel}/play", media=media)
-        return str((playback or {}).get("id") or "")
-
     async def play_to_bridge(self, bridge: str, media: str) -> str:
         """Starts ``media`` (``tone:ring`` and the like) in a bridge; its playback id.
 

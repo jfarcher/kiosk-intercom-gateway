@@ -876,8 +876,9 @@ class CallManager:
         names = ", ".join(lis.kiosk.name for lis in a.listeners.values())
         _LOG.info("%s announcing to %s", caller, names)
         self._emit_announcement(a, "answered")
-        try:  # the caller's cue to speak; a channel playback this short holds nothing up
-            await self.ari.play(channel, "sound:beep")
+        try:  # the cue to speak, for the kiosks too. Into the bridge: a playback on the
+            # caller's channel would hold up its Stasis queue, and its hangup with it.
+            await self.ari.play_to_bridge(a.bridge, "sound:beep")
         except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
             _LOG.debug("beep: %s", err)
 

@@ -40,8 +40,9 @@ async def test_every_ready_kiosk_hears_the_phone(rig):
         c = k.calls[k.last_call()]
         assert c["kind"] == "broadcast" and c["from"]["name"] == "Alice (101)"
     assert rig.fake_ari.calls_to("POST", "/channels/sip-1/answer")
-    beep = rig.fake_ari.calls_to("POST", "/channels/sip-1/play")
-    assert beep and beep[0]["media"] == "sound:beep"  # the caller's cue to speak
+    beep = rig.fake_ari.calls_to("POST", "/bridges/bridge-1/play")
+    assert beep and beep[0]["media"] == "sound:beep"  # the cue to speak
+    assert not rig.fake_ari.calls_to("POST", "/channels/sip-1/play")  # would block its hangup
 
     ext = next(c for c in rig.fake_ari.media)
     voice = le_samples(0, 320 * 8)
