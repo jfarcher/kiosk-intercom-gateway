@@ -854,7 +854,7 @@ class CallManager:
         _LOG.info("%s announcing to %d kiosk%s", caller, len(ready), "" if len(ready) == 1 else "s")
         try:
             await self.ari.answer(channel)
-            a.media = MediaLeg(a.id, lambda frame: self._to_listeners(a, frame))
+            a.media = MediaLeg(a.id, lambda frame: self._to_listeners(a, frame), silence=True)
             self.media_server.expect(a.media)
             ext = await self.ari.external_media(self.media_server.host, self.media_server.port, a.media.uuid)
             a.ext_channel = str(ext["id"])

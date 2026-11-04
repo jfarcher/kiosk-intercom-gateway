@@ -52,6 +52,10 @@ async def test_every_ready_kiosk_hears_the_phone(rig):
         await until(lambda k=k: len(k.frames) >= 2, what=f"audio at {k.name}")
         assert ints(b"".join(k.frames[:2])) == ints(voice)
 
+    # Asterisk gets a steady stream back (silence), or the bridge stalls.
+    await until(lambda: len(rig.fake_ari.media[ext].audio()) >= 5, what="silence to Asterisk")
+    assert set(rig.fake_ari.media[ext].audio()[-1]) == {0}
+
     live = rig.events[-1]
     assert live["direction"] == "phone_to_all" and sorted(live["kiosks"]) == ["Bedroom", "Kitchen"]
     assert live["kiosk_extension"] == "800" and live["phone_number"] == "101"

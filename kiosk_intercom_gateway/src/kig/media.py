@@ -33,6 +33,7 @@ _LOG = logging.getLogger(__name__)
 KIND_HANGUP, KIND_UUID, KIND_DTMF, KIND_SLIN16, KIND_ERROR = 0x00, 0x01, 0x03, 0x12, 0xFF
 PTIME_MS = 20
 CHUNK_BYTES = SAMPLE_RATE * PTIME_MS // 1000 * 2  # 640
+SILENCE = bytes(CHUNK_BYTES)
 MAX_QUEUE = 25  # 500 ms toward Asterisk before dropping the oldest
 
 
@@ -53,8 +54,11 @@ class MediaLeg:
     of Asterisk's audio; :meth:`send_frame` takes kiosk audio, paced out as
     one 20 ms message per tick."""
 
-    def __init__(self, call_id: str, on_frame: Callable[[bytes], None]) -> None:
+    def __init__(self, call_id: str, on_frame: Callable[[bytes], None], silence: bool = False) -> None:
         self.call_id = call_id
+        # Fill gaps with silence: a leg nothing ever talks into (an announcement)
+        # would otherwise send Asterisk no frames at all, and the bridge stalls.
+        self.silence = silence
         self.uuid = str(uuid.uuid4())
         self.on_frame = on_frame
         self.connected = asyncio.Event()
@@ -110,12 +114,13 @@ class MediaLeg:
             await asyncio.sleep(max(0.0, due - loop.time()))
             if loop.time() - due > 0.2:  # fell far behind (suspended): resync
                 due = loop.time()
-            if not started and len(self._queue) < 2:  # a 40 ms jitter buffer
+            if not started and len(self._queue) < 2 and not self.silence:  # a 40 ms jitter buffer
                 continue
             started = bool(self._queue)
-            if self._queue:
+            if self._queue or self.silence:
+                frame = self._queue.popleft() if self._queue else SILENCE
                 try:
-                    self._writer.write(message(KIND_SLIN16, self._queue.popleft()))
+                    self._writer.write(message(KIND_SLIN16, frame))
                     self.sent += 1
                 except (ConnectionError, RuntimeError):
                     return
