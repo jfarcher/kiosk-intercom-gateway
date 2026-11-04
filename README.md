@@ -8,6 +8,7 @@ intercom to the SIP phones on [Asterisk](https://github.com/TECH7Fox/asterisk-ha
 - **Phones call kiosks.** Every kiosk gets an extension (801, 802, …). Dial it and the kiosk rings
   like an intercom call, showing who's calling.
 - **Kiosks call phones.** Registered phones appear in every kiosk's **Call a kiosk** list.
+- **Announce to all.** Dial 800 from a phone and every Ready kiosk hears you.
 - **Automations.** Calls fire Home Assistant events, can be started and ended from automations,
   and show as sensors.
 
@@ -133,7 +134,7 @@ clean-up afterwards.
 2. SIP → kiosk calls. Done in 0.2.
 3. Kiosk → SIP calls. Done in 0.3.
 4. Home Assistant events, actions and sensors. Done in 0.4.
-5. **Announce to all** from a phone.
+5. Announce to all from a phone. Done in 0.5.
 6. HTTPS/WSS for kiosks with **Encrypt communications**.
 
 ## Related work

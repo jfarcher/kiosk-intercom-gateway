@@ -114,6 +114,43 @@ class Call:
         }
 
 
+@dataclass
+class Listener:
+    """One kiosk hearing an announcement."""
+    kiosk: Kiosk
+    ws: Any = None
+    outbox: asyncio.Queue[bytes | str | None] = field(default_factory=asyncio.Queue)
+
+
+@dataclass
+class Announcement:
+    """A phone talking to every Ready kiosk at once, one way, the way a kiosk's
+    own Announce to all does: each kiosk is sent ``kind: broadcast``, answers
+    ``listening`` and gets its audio socket at once; nothing comes back."""
+    id: str
+    channel: str
+    caller: str
+    number: str = ""
+    started: float = field(default_factory=time.time)
+    live: float | None = None
+    ended: bool = False
+    reason: str = ""
+    sip_gone: bool = False
+    media: MediaLeg | None = None
+    ext_channel: str = ""
+    bridge: str = ""
+    listeners: dict[str, Listener] = field(default_factory=dict)  # kiosk id → listener
+    tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    talking: bool = False
+    talk_seen: float = 0.0
+
+    def to_json(self) -> dict[str, Any]:
+        return {"id": self.id, "direction": "announce", "kiosk": f"All kiosks ({len(self.listeners)})",
+                "extension": "", "caller": self.caller, "state": "in_call" if self.live else "connecting",
+                "since": self.live or self.started, "reason": self.reason,
+                "kiosks": [lis.kiosk.name for lis in self.listeners.values()]}
+
+
 def caller_label(channel: dict[str, Any]) -> str:
     caller = channel.get("caller") or {}
     name, number = str(caller.get("name") or "").strip(), str(caller.get("number") or "").strip()
@@ -148,6 +185,7 @@ class CallManager:
         listen_host: str = "0.0.0.0",
         listen_port: int = 0,
         media_host: str = "127.0.0.1",
+        announce_extension: str = "800",
     ) -> None:
         self.roster = roster
         self.state = state
@@ -174,6 +212,9 @@ class CallManager:
         # Told of every call as it rings, is answered and ends (Home Assistant events).
         self.listeners: list[Callable[[dict[str, Any]], None]] = []
         self.out_ring_timeout = min(ring_timeout, 30.0)  # a calling kiosk gives up at 30 s + 10
+        self.announce_extension = announce_extension
+        self.announcements: dict[str, Announcement] = {}
+        self.ann_by_channel: dict[str, Announcement] = {}
         roster.on_change(self.assign_extensions)
         roster.on_rekey(self._kiosk_reinstalled)
         self.assign_extensions()
@@ -199,7 +240,9 @@ class CallManager:
                     self._kiosk_reinstalled(orphans[0], k.id)
             if k.present:
                 self.state.remember_address(k.id, endpoint)
-            k.extra["extension"] = self.state.extension_for(k.id, self.extension_start)
+            k.extra["extension"] = self.state.extension_for(
+                k.id, self.extension_start, reserved={self.announce_extension}
+            )
 
     def _kiosk_reinstalled(self, old_id: str, new_id: str) -> None:
         k = self.roster.kiosks.get(new_id)
@@ -222,6 +265,8 @@ class CallManager:
         k = self.roster.kiosks.get(target.strip()) or self.roster.find(target)
         if k is None or not k.id:
             return {"ok": False, "error": f"No kiosk {target!r}."}
+        if extension == self.announce_extension:
+            return {"ok": False, "conflict": True, "error": f"{extension} is the Announce to all number."}
         holder = self.state.kiosk_for(extension)
         if holder is not None and holder != k.id:
             other = self.roster.kiosks.get(holder)
@@ -280,6 +325,8 @@ class CallManager:
     async def stop(self) -> None:
         for c in list(self.calls.values()):
             await self.end(c, "ended")
+        for a in list(self.announcements.values()):
+            await self.end_announcement(a, "ended")
         if self._runner:
             await self._runner.cleanup()
         await self.media_server.stop()
@@ -296,7 +343,9 @@ class CallManager:
             "app": self.ari.app if self.ari else "",
             "listener_port": self.port,
             "media_port": self.media_server.port,
-            "calls": [c.to_json() for c in self.calls.values()],
+            "calls": [c.to_json() for c in self.calls.values()]
+            + [a.to_json() for a in self.announcements.values()],
+            "announce_extension": self.announce_extension,
             "phones": self.phones.snapshot() if self.phones else [],
             "history": self.history[-10:],
         }
@@ -381,6 +430,13 @@ class CallManager:
             number = str(args[2]) if len(args) > 2 else str((channel.get("caller") or {}).get("number") or "")
             asyncio.ensure_future(self.place(cid, target, label, number, answered=answered))
         elif kind in ("StasisEnd", "ChannelDestroyed"):
+            a = self.ann_by_channel.get(cid)
+            if a is not None:
+                if cid == a.channel:
+                    a.sip_gone = True
+                if kind == "ChannelDestroyed" or cid == a.channel:
+                    asyncio.ensure_future(self.end_announcement(a, "ended"))
+                return
             c = self.by_channel.get(cid)
             if c is not None:
                 c.sip_gone = True
@@ -407,6 +463,9 @@ class CallManager:
         self, channel: str, target: str, caller: str, number: str = "", answered: bool = False
     ) -> None:
         assert self.ari is not None
+        if target.strip().lower() in (self.announce_extension, "all", "announce"):
+            await self.announce(channel, caller, number)
+            return
         k = self.kiosk_for(target)
         if k is None:
             _LOG.info("%s dialled %r: no kiosk by that extension or name", caller, target)
@@ -775,6 +834,173 @@ class CallManager:
         except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
             _LOG.debug("hangup %s: %s", channel, err)
 
+    # ── announce to all ──────────────────────────────────────────────
+
+    async def announce(self, channel: str, caller: str, number: str = "") -> None:
+        """A phone dialled the Announce to all number: its voice to every Ready
+        kiosk that takes it; the caller hears a beep once they are listening."""
+        assert self.ari is not None
+        fp = self.roster.key_fingerprint
+        ready = [k for k in self.roster.kiosks.values() if k.status(fp) == "ready"]
+        if not ready:
+            _LOG.info("%s announced to all: no kiosk is ready", caller)
+            await self._refuse(channel, "unavailable", caller, "all kiosks")
+            return
+        if channel in self._gone:
+            return
+        a = Announcement(id=self._call_id(), channel=channel, caller=caller, number=number)
+        self.announcements[a.id] = a
+        self.ann_by_channel[channel] = a
+        _LOG.info("%s announcing to %d kiosk%s", caller, len(ready), "" if len(ready) == 1 else "s")
+        try:
+            await self.ari.answer(channel)
+            a.media = MediaLeg(a.id, lambda frame: self._to_listeners(a, frame))
+            self.media_server.expect(a.media)
+            ext = await self.ari.external_media(self.media_server.host, self.media_server.port, a.media.uuid)
+            a.ext_channel = str(ext["id"])
+            self.ann_by_channel[a.ext_channel] = a
+            await asyncio.wait_for(a.media.connected.wait(), 5)
+            a.bridge = await self.ari.bridge(channel, a.ext_channel)
+        except Exception as err:
+            _LOG.warning("announcing from %s failed: %s", caller, err)
+            await self.end_announcement(a, "failed")
+            return
+        await asyncio.gather(*(self._reach(a, k) for k in ready))
+        if a.ended:
+            return
+        if not a.listeners:
+            _LOG.info("%s announced to all: no kiosk took it", caller)
+            await self.end_announcement(a, "unavailable")
+            return
+        a.live = time.time()
+        names = ", ".join(lis.kiosk.name for lis in a.listeners.values())
+        _LOG.info("%s announcing to %s", caller, names)
+        self._emit_announcement(a, "answered")
+        try:  # the caller's cue to speak; a channel playback this short holds nothing up
+            await self.ari.play(channel, "sound:beep")
+        except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
+            _LOG.debug("beep: %s", err)
+
+    async def _reach(self, a: Announcement, k: Kiosk) -> None:
+        """One kiosk: offer the broadcast; on ``listening`` open its audio socket."""
+        probe = Call(id=a.id, kiosk=k, channel="", caller=a.caller, peer_url=k.intercom_url)
+        offer = {"call": a.id, "kind": "broadcast", "from": self._self_info(k, a.caller, a.number)}
+        status, _ = await self._post(probe, "/api/intercom/call", offer)
+        if status != "listening" or a.ended:
+            _LOG.info("%s skips the announcement: %s", k.name, status)
+            return
+        token = issue_token(self.roster.key, a.id, self.state.gateway_id)
+        try:
+            ws = await self.ws_http.ws_connect(
+                f"{k.intercom_url.replace('http', 'ws', 1)}/api/intercom/audio/{a.id}",
+                params={"token": token}, heartbeat=20,
+            )
+        except (aiohttp.ClientError, OSError, TimeoutError) as err:
+            _LOG.warning("%s took the announcement but its audio socket failed: %s", k.name, err)
+            return
+        if a.ended:
+            await ws.close()
+            return
+        lis = Listener(kiosk=k, ws=ws)
+        a.listeners[k.id] = lis
+        lis.outbox.put_nowait('{"type":"talk","on":false}')
+        for coro in (self._listener_send(a, lis), self._listener_receive(a, lis)):
+            t = asyncio.ensure_future(coro)
+            a.tasks.add(t)
+            t.add_done_callback(a.tasks.discard)
+
+    def _to_listeners(self, a: Announcement, frame: bytes) -> None:
+        now = time.monotonic()
+        loud = rms(frame) >= TALK_LEVEL
+        if loud:
+            a.talk_seen = now
+        talking = loud or (a.talking and now - a.talk_seen < TALK_HANGOVER_S)
+        flag = None
+        if talking != a.talking:
+            a.talking = talking
+            flag = '{"type":"talk","on":%s}' % ("true" if talking else "false")
+        for lis in a.listeners.values():
+            if flag:
+                lis.outbox.put_nowait(flag)
+            lis.outbox.put_nowait(frame)
+
+    async def _listener_send(self, a: Announcement, lis: Listener) -> None:
+        while not lis.ws.closed:
+            item = await lis.outbox.get()
+            if item is None:
+                return
+            try:
+                await (lis.ws.send_str(item) if isinstance(item, str) else lis.ws.send_bytes(item))
+            except (ConnectionError, RuntimeError):
+                return
+
+    async def _listener_receive(self, a: Announcement, lis: Listener) -> None:
+        async for msg in lis.ws:
+            if msg.type == aiohttp.WSMsgType.TEXT and '"end"' in msg.data:
+                break  # Dismiss (or Reply) on that kiosk
+            if msg.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                break
+        if a.ended:
+            return
+        a.listeners.pop(lis.kiosk.id, None)
+        lis.outbox.put_nowait(None)
+        await lis.ws.close()
+        _LOG.info("%s left the announcement", lis.kiosk.name)
+        if not a.listeners and a.live:
+            await self.end_announcement(a, "ended")  # everyone dismissed it
+
+    async def end_announcement(self, a: Announcement, reason: str) -> None:
+        if a.ended:
+            return
+        a.ended, a.reason = True, reason
+        for lis in list(a.listeners.values()):
+            try:
+                await lis.ws.send_str('{"type":"end"}')
+            except (ConnectionError, RuntimeError):
+                pass
+            lis.outbox.put_nowait(None)
+            await lis.ws.close()
+        if a.media:
+            self.media_server.forget(a.media)
+            await a.media.close()
+        if self.ari is not None:
+            ari = self.ari
+            steps = []
+            if a.bridge:
+                steps.append(lambda: ari.destroy_bridge(a.bridge))
+            if a.ext_channel:
+                steps.append(lambda: ari.hangup(a.ext_channel))
+            if not a.sip_gone:
+                steps.append(lambda: ari.hangup(a.channel, HANGUP_CAUSE.get(reason, "normal")))
+            for step in steps:
+                try:
+                    await step()
+                except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
+                    _LOG.debug("cleanup: %s", err)
+        self.announcements.pop(a.id, None)
+        self.ann_by_channel.pop(a.channel, None)
+        self.ann_by_channel.pop(a.ext_channel, None)
+        for t in a.tasks:
+            if t is not asyncio.current_task():
+                t.cancel()
+        length = f", {time.time() - a.live:.0f}s" if a.live else ""
+        _LOG.info("announcement from %s ended: %s%s", a.caller, reason, length)
+        self.history.append({**a.to_json(), "state": "ended", "at": time.time()})
+        del self.history[:-20]
+        self._emit_announcement(a, "ended")
+
+    def _emit_announcement(self, a: Announcement, state: str) -> None:
+        data = {
+            "call_id": a.id, "direction": "phone_to_all", "state": state,
+            "kiosk": "all kiosks", "kiosk_id": "", "kiosk_extension": self.announce_extension,
+            "kiosks": [lis.kiosk.name for lis in a.listeners.values()],
+            "phone": a.caller, "phone_number": a.number,
+        }
+        if state == "ended":
+            data["reason"] = a.reason
+            data["duration"] = round(time.time() - a.live) if a.live else 0
+        self._tell(data)
+
     # ── actions (Home Assistant) ─────────────────────────────────────
 
     async def action_call(self, phone: str, kiosk: str) -> str:
@@ -783,8 +1009,9 @@ class CallManager:
         or why not."""
         if self.ari is None or not self.ari.connected:
             return "Asterisk is not connected"
-        k = self.kiosk_for(kiosk)
-        if k is None:
+        everyone = kiosk.strip().lower() in ("all", "announce", self.announce_extension)
+        k = None if everyone else self.kiosk_for(kiosk)
+        if k is None and not everyone:
             return f"no kiosk by the name or extension {kiosk!r}"
         phone = phone.strip()
         endpoint = phone if "/" in phone else f"PJSIP/{phone}"
@@ -796,16 +1023,19 @@ class CallManager:
             cid = await self.ari.endpoint_callerid(number)
             label = f"{cid} ({number})" if cid else f"Phone {number}"
         label = label.replace(",", " ")  # ARI splits appArgs on commas
-        ext = k.extra.get("extension", "")
-        target = ext or k.id
+        if k is None:  # announce to all, once the phone picks up
+            target, shown = self.announce_extension, f'"All kiosks" <{self.announce_extension}>'
+        else:
+            ext = k.extra.get("extension", "")
+            target = ext or k.id
+            shown = f'"{k.name}" <{ext}>' if ext else f'"{k.name}"'
         try:
             await self.ari.originate(
-                endpoint, f"{target},{label},{number}", f'"{k.name}" <{ext}>' if ext else f'"{k.name}"',
-                int(self.out_ring_timeout),
+                endpoint, f"{target},{label},{number}", shown, int(self.out_ring_timeout)
             )
         except (AriError, aiohttp.ClientError, OSError, TimeoutError) as err:
             return f"could not ring {phone}: {err}"
-        _LOG.info("call action: ringing %s, then %s", label, k.name)
+        _LOG.info("call action: ringing %s, then %s", label, k.name if k else "an announcement to all")
         return ""
 
     async def action_hangup(self, kiosk: str = "", phone: str = "", call: str = "") -> int:
@@ -821,7 +1051,13 @@ class CallManager:
         ]
         for c in matched:
             await self.end(c, "ended")
-        return len(matched)
+        anns = [
+            a for a in list(self.announcements.values())
+            if (not call or a.id == call) and not k and (not phone or a.number == phone.rsplit("/", 1)[-1])
+        ]
+        for a in anns:
+            await self.end_announcement(a, "ended")
+        return len(matched) + len(anns)
 
     # ── telling Home Assistant ───────────────────────────────────────
 

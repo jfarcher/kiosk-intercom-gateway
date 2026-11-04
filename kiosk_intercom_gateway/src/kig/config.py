@@ -44,6 +44,7 @@ class Config:
     ring_timeout: int = 60
     intercom_port: int = 0  # 0: any free port (kiosks learn it with each call)
     media_host: str = "127.0.0.1"  # where Asterisk connects for call audio
+    announce_extension: str = "800"  # dialled: Announce to all
     offer_phones: bool = True  # kiosks can call SIP phones
     phones: list[str] = field(default_factory=list)  # empty: every numbered extension
     advertise_address: str = ""  # where kiosks reach phones; empty: found automatically
@@ -75,6 +76,7 @@ def load(path: Path = OPTIONS) -> Config:
         ring_timeout=int(raw.get("ring_timeout") or 60),
         intercom_port=int(raw.get("intercom_port") or 0),
         media_host=str(raw.get("media_host") or "127.0.0.1").strip(),
+        announce_extension=str(raw.get("announce_extension") or "800").strip(),
         offer_phones=bool(raw.get("offer_phones", True)),
         phones=[str(x) for x in raw.get("phones") or [] if str(x).strip()],
         advertise_address=str(raw.get("advertise_address") or "").strip(),

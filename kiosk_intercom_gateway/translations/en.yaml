@@ -62,5 +62,10 @@ configuration:
     description: >-
       The address kiosks reach the phones on. Empty finds this machine's LAN
       address by itself; set it when Home Assistant has several networks.
+  announce_extension:
+    name: Announce to all number
+    description: >-
+      Dial it from a phone to talk to every Ready kiosk at once. 800 by
+      default, which the 8XX dialplan line already sends here.
   log_level:
     name: Log level

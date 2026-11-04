@@ -210,7 +210,8 @@ function renderAsterisk(a) {
       <li>In this app's <b>Configuration</b>, set <b>ARI username</b> to <code>${esc(user)}</code> and
           <b>ARI password</b> to the password you chose, save and restart.</li>
       <li>Dial a kiosk's extension from any phone on Asterisk. The numbers are listed below, and the phones
-          kiosks can call are under <b>Phones</b>.</li>
+          kiosks can call are under <b>Phones</b>. <b>${esc(a.announce_extension || "800")}</b> announces to
+          every Ready kiosk at once.</li>
     </ol></details>`;
   $("setup").ontoggle = (e) => { setupOpen = e.target.open; };
 }
@@ -304,6 +305,9 @@ function renderAutomations(g, kiosks) {
           <code>phone_number</code>, <code>reason</code> and <code>duration</code>. A missed call:${snip("trigger", trigger)}</li>
       <li><b>Ring a phone, then a kiosk</b> (click to call): the phone rings showing the kiosk; when it is
           picked up, the kiosk rings showing the phone.${snip("call", call)}</li>
+      <li><b>Announce to all</b> from a phone: dial <b>${esc(a.announce_extension || "800")}</b>. From an
+          automation, the call action with <code>kiosk: all</code> rings the phone and, once it is picked
+          up, every Ready kiosk hears it.</li>
       <li><b>Hang up</b> a kiosk's call (or <code>phone:</code>, or nothing for every call):${snip("hangup", hangup)}</li>
       <li><b>A kiosk calls a phone</b> with the kiosk's own ESPHome action, the phone named as on the
           kiosks' list:${snip("kioskcalls", kioskCalls)}</li>

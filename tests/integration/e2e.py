@@ -248,6 +248,36 @@ async def click_to_call(kiosk: FakeKiosk, calls: CallManager, s, url, label: str
     calls.listeners.remove(events.append)
 
 
+async def announcement(s, url, kiosk: FakeKiosk, calls: CallManager, label: str) -> None:
+    """Dial 800: the kiosk is sent a broadcast and hears the phone's 440 Hz."""
+    for ev in (kiosk.ws_open, kiosk.ws_closed):
+        ev.clear()
+    kiosk.calls.clear()
+    kiosk.frames.clear()
+    kiosk.texts.clear()
+    async with s.post(f"{url}/ari/channels", params={
+        "endpoint": "Local/800@default/n", "context": "kig-ci-tone", "extension": "s", "priority": "1",
+        "callerId": "Doorbell <201>",
+    }) as r:
+        check(r.status == 200, f"{label}: Asterisk dialled 800 (HTTP {r.status})")
+    check(await wait(lambda: kiosk.ws_open.is_set(), 15), f"{label}: the kiosk took the broadcast")
+    c = kiosk.calls[kiosk.last_call()]
+    check(c["kind"] == "broadcast", f"{label}: sent as a broadcast")
+    note(f"{label}: the kiosk shows {c['from']['name']!r}")
+    check(await wait(lambda: kiosk.ws_closed.is_set(), 15), f"{label}: the announcement ended")
+    check(any(json.loads(t).get("type") == "end" for t in kiosk.texts),
+          f"{label}: the kiosk was told it ended")
+    heard = ints(b"".join(kiosk.frames[-25:]))
+    f, rms = frequency(heard, SAMPLE_RATE), level(heard)
+    note(f"{label}: kiosk heard {len(kiosk.frames)} frames; last 2 s: {f:.0f} Hz, RMS {rms:.0f}")
+    check(400 <= f <= 480 and rms > 300, f"{label}: the kiosk hears the announcement")
+    check(await wait(lambda: not calls.announcements, 5), f"{label}: the gateway cleaned up")
+    await asyncio.sleep(1)
+    async with s.get(f"{url}/ari/channels") as r:
+        left = await r.json()
+    check(not left, f"{label}: no channels left {[x['name'] for x in left]}")
+
+
 async def main(url: str, user: str, password: str) -> None:
     kiosk = FakeKiosk(KEY)
     await kiosk.start()
@@ -269,6 +299,8 @@ async def main(url: str, user: str, password: str) -> None:
         flush_report()  # one annotation per call: GitHub cuts long ones
         await one_call(s, url, kiosk, calls, "kig-ci-rec", "call 2 (phone → kiosk, recorded)")
         flush_report()  # one annotation per call: GitHub cuts long ones
+        await announcement(s, url, kiosk, calls, "call 2b (phone dials 800: announce to all)")
+        flush_report()
 
         phones = PhoneDirectory(
             ari, roster, calls.state, None,

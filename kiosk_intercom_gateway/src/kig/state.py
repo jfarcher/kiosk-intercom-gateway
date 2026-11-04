@@ -63,12 +63,12 @@ class State:
         except OSError as err:
             _LOG.warning("could not save %s: %s", self.path, err)
 
-    def extension_for(self, kiosk_id: str, start: int) -> str:
+    def extension_for(self, kiosk_id: str, start: int, reserved: set[str] | None = None) -> str:
         """The kiosk's extension, giving it the lowest free one from ``start``
-        the first time it is seen."""
+        the first time it is seen (never one of ``reserved``)."""
         if kiosk_id in self.extensions:
             return self.extensions[kiosk_id]
-        taken = set(self.extensions.values())
+        taken = set(self.extensions.values()) | (reserved or set())
         n = start
         while str(n) in taken:
             n += 1

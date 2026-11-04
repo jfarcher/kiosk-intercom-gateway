@@ -77,6 +77,21 @@ any phone registered to Asterisk.
 - Dialling a kiosk's name instead of its number also works, from a phone that can
   dial names or from the dialplan: `Stasis(kiosk-intercom,Kitchen)`.
 
+## Announce to all
+
+Dial **800** from any phone to talk to every Ready kiosk at once, one way, the same as a kiosk's own
+**Announce to all**:
+
+- Each kiosk plays its chime, shows who's announcing, and offers **Reply** (which calls your phone
+  back) and **Dismiss**.
+- Kiosks on Do not disturb, already in a call, or with **Accept announcements** off are skipped.
+- You hear a beep once the kiosks are listening, so start talking then.
+- Hang up to end it. If every kiosk dismisses it, the call ends too.
+- The `_8XX` dialplan line already sends 800 here. **Announce to all number** changes it, and kiosks
+  are never given that number.
+- From an automation, the `call` action with `kiosk: all` rings a phone and, once it's picked up,
+  announces from it. Its events have `direction: phone_to_all` and a `kiosks` list of who heard it.
+
 ## Kiosks calling phones
 
 The **Phones kiosks can call** card on the status page lists every phone (PJSIP endpoint)
@@ -205,6 +220,7 @@ minute of Home Assistant restarting.
 | Phones | Which phones to offer, as `101` or `101=Front door`. The status page edits this for you. Empty offers every numbered extension. |
 | Advertise address | The address kiosks reach the phones on. Empty finds this machine's LAN address. Set it when Home Assistant has more than one network. |
 | Call audio address | Where Asterisk connects for call audio: `127.0.0.1` when Asterisk runs on this Home Assistant, this machine's LAN address when it runs elsewhere. |
+| Announce to all number | Dial it to talk to every Ready kiosk at once. 800 by default. |
 | Log level | debug, info, warning or error. |
 
 ## In Home Assistant
@@ -218,5 +234,5 @@ listed without them.
 
 ## Not yet
 
-- Announce to all from a phone, or to phones from a kiosk (phones skip Announce to all).
+- A kiosk's Announce to all reaching phones (phones skip it).
 - Kiosks with **Encrypt communications** on. They show **Encrypted** and can't be called.

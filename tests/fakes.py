@@ -34,6 +34,7 @@ class FakeKiosk:
         self.key, self.name, self.id = key, name, kid
         self.verifier = TokenVerifier(key)
         self.mode = "ring"  # ring, busy, dnd, off
+        self.accept_announcements = True
         self.dnd = False
         self.calls: dict[str, dict[str, Any]] = {}
         self.signals: list[tuple[str, str]] = []  # (call id, action) from the gateway
@@ -93,11 +94,14 @@ class FakeKiosk:
             return web.json_response({"status": "key"}, status=403)
         if self.mode != "ring":
             return web.json_response({"status": self.mode})
+        if body["kind"] == "broadcast" and not self.accept_announcements:
+            return web.json_response({"status": "refused"})
         frm = body["from"]
         self.calls[body["call"]] = {
             "from": frm, "kind": body["kind"], "address": request.remote, "port": frm["port"],
         }
-        return web.json_response({"status": "ringing"})
+        # As the kiosk does: a broadcast is heard at once, a call rings.
+        return web.json_response({"status": "listening" if body["kind"] == "broadcast" else "ringing"})
 
     async def _signal(self, request: web.Request) -> web.Response:
         call = request.match_info["call"]

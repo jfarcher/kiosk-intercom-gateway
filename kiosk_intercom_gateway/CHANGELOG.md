@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- **Announce to all from a phone.** Dial 800 and every Ready kiosk hears you, one way, just like a
+  kiosk's own Announce to all. Each kiosk plays its chime, shows who's announcing, and offers
+  **Reply** (which calls your phone back) and **Dismiss**. Kiosks on Do not disturb, in a call, or
+  with Accept announcements off are skipped. You hear a beep once the kiosks are listening.
+- The `call` action with `kiosk: all` rings a phone, then announces from it once picked up.
+- New option: **Announce to all number** (800). Kiosks are never given it.
+
 ## 0.4.3
 
 - **A reinstalled kiosk keeps its extension.** A kiosk that comes back at the same address and

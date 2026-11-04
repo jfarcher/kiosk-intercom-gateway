@@ -85,6 +85,7 @@ async def main() -> None:
             ring_timeout=cfg.ring_timeout,
             listen_port=cfg.intercom_port,
             media_host=cfg.media_host,
+            announce_extension=cfg.announce_extension,
         )
         try:
             await calls.start()
