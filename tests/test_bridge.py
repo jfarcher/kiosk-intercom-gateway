@@ -15,6 +15,7 @@ from kig.protocol import FRAME_BYTES, issue_token
 from kig.roster import Roster
 from kig.media import CHUNK_BYTES
 from kig.state import State
+from kig.tls import Certificate
 
 KEY = "shared-intercom-key"
 
@@ -32,19 +33,20 @@ class Rig:
     def __init__(self, tmp_path):
         self.tmp_path = tmp_path
 
-    async def start(self, password="secret", ring_timeout=60.0):
-        self.kiosk = FakeKiosk(KEY)
+    async def start(self, password="secret", ring_timeout=60.0, encrypted=False):
+        self.kiosk = FakeKiosk(KEY, encrypted=encrypted, cert_dir=self.tmp_path / "kiosk")
         await self.kiosk.start()
         self.fake_ari = FakeAri()
         await self.fake_ari.start()
         self.prober = HttpProber()
         self.roster = Roster(self.prober, key=KEY)
         self.roster.heard({"id": self.kiosk.id, "name": "Kitchen", "address": "127.0.0.1",
-                           "port": self.kiosk.port})
+                           "port": self.kiosk.port, "tls": encrypted})
         await self.roster.probe_due()
         self.ari = Ari(self.fake_ari.url, "kig", password, "kiosk-intercom")
         self.calls = CallManager(self.roster, State(self.tmp_path / "state.json"), self.ari,
-                                 listen_host="127.0.0.1", ring_timeout=ring_timeout)
+                                 listen_host="127.0.0.1", ring_timeout=ring_timeout,
+                                 certificate=Certificate(self.tmp_path))
         await self.calls.start()
         self.stop = asyncio.Event()
         self.ari_task = asyncio.ensure_future(self.ari.run(self.calls.on_event, self.stop))

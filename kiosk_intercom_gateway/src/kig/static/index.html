@@ -34,7 +34,7 @@
   .k .meta { color: var(--muted); font-size: 13px; grid-column: 1 / -1; overflow-wrap: anywhere; }
   .pill { justify-self: end; align-self: start; font-size: 12px; font-weight: 600; border-radius: 999px;
           padding: 2px 10px; border: 1px solid currentColor; white-space: nowrap; }
-  .ready { color: var(--ok); } .dnd, .encryption, .key, .no_key { color: var(--warn); }
+  .ready { color: var(--ok); } .dnd, .key, .no_key { color: var(--warn); }
   .unreachable, .off { color: var(--bad); } .unknown, .offline { color: var(--idle); }
   .empty { color: var(--muted); text-align: center; padding: 32px 8px; }
   .warn { color: var(--warn); }
@@ -383,7 +383,7 @@ async function load() {
         `${k.id && k.extension ? `<button type="button" class="small" data-num="${esc(k.id)}">Change</button>` : ""}</span>
         <span class="pill ${k.status}">${esc(k.status_text)}</span>
         <span class="meta">${esc(k.address)}:${k.admin_port}${k.area ? " · " + esc(k.area) : ""}` +
-        `${k.version ? " · v" + esc(k.version) : ""} · ${k.source === "manual" ? "added by address" : "mDNS"}` +
+        `${k.version ? " · v" + esc(k.version) : ""}${k.encrypted ? " · encrypted" : ""} · ${k.source === "manual" ? "added by address" : "mDNS"}` +
         `${k.ha_intercom_state ? " · HA: " + esc(k.ha_intercom_state) : ""} · probed ${ago(k.probed_at)}</span>
         ${numMsg[k.id] ? `<span class="meta msg ${numMsg[k.id].cls}">${esc(numMsg[k.id].text)}</span>` : ""}
       </div>`).join("")

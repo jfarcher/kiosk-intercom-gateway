@@ -9,6 +9,7 @@ import signal
 
 from aiohttp import web
 
+from .tls import Certificate
 from . import __version__, config
 from .ari import Ari
 from .bridge import CallManager
@@ -77,6 +78,7 @@ async def main() -> None:
         else:
             _LOG.info("no ARI username set: SIP calls are off")
         state = State()
+        certificate = Certificate(state.path.parent)  # for kiosks with Encrypt communications on
         calls = CallManager(
             roster,
             state,
@@ -86,6 +88,7 @@ async def main() -> None:
             listen_port=cfg.intercom_port,
             media_host=cfg.media_host,
             announce_extension=cfg.announce_extension,
+            certificate=certificate,
         )
         try:
             await calls.start()
@@ -109,6 +112,7 @@ async def main() -> None:
                 {"identity": calls.phone_identity, "call": calls.phone_call,
                  "signal": calls.phone_signal, "audio": calls.phone_audio},
                 configured=cfg.phones, advertise_address=cfg.advertise_address,
+                certificate=certificate,
             )
             calls.phones = phones
             stack.push_async_callback(phones.close)

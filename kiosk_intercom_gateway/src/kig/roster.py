@@ -35,7 +35,6 @@ STATUS_TEXT = {
     "off": "Intercom off",
     "key": "Different key",
     "no_key": "No key set on the gateway",
-    "encryption": "Encrypted (not supported yet)",
     "unreachable": "Unreachable",
     "unknown": "Not probed yet",
     "offline": "Offline",
@@ -74,10 +73,15 @@ class Kiosk:
         return f"{scheme}://{_host_for_url(self.address)}:{self.port}"
 
     @property
+    def encrypted(self) -> bool:
+        """Encrypt communications: its intercom is HTTPS/WSS only, and so must
+        be everything the gateway offers it (the kiosk's ``callTls``)."""
+        return self.tls if self.intercom_tls is None else self.intercom_tls
+
+    @property
     def intercom_url(self) -> str:
-        tls = self.tls if self.intercom_tls is None else self.intercom_tls
         port = self.port if self.intercom_port is None else self.intercom_port
-        return f"{'https' if tls else 'http'}://{_host_for_url(self.address)}:{port}"
+        return f"{'https' if self.encrypted else 'http'}://{_host_for_url(self.address)}:{port}"
 
     @property
     def present(self) -> bool:
@@ -95,8 +99,6 @@ class Kiosk:
             return "no_key"
         if self.fingerprint != our_fingerprint:
             return "key"
-        if self.intercom_tls:
-            return "encryption"
         if self.dnd:
             return "dnd"
         return "ready"
@@ -115,6 +117,7 @@ class Kiosk:
             "extension": self.extra.get("extension", ""),
             "source": "manual" if self.manual and not self.heard else "mdns",
             "dnd": self.dnd,
+            "encrypted": self.encrypted if self.enabled else False,
             "area": self.ha_area,
             "ha_device": self.ha_device,
             "ha_intercom_state": self.ha_state,
@@ -365,7 +368,7 @@ class Roster:
         return matches[0] if len(matches) == 1 else None
 
     def snapshot(self) -> list[dict[str, Any]]:
-        order = {"ready": 0, "dnd": 1, "encryption": 2, "key": 3, "no_key": 3, "off": 4,
+        order = {"ready": 0, "dnd": 1, "key": 3, "no_key": 3, "off": 4,
                  "unknown": 5, "unreachable": 6, "offline": 7}
         items = [k.to_json(self.key_fingerprint) for k in self.kiosks.values()]
         return sorted(items, key=lambda j: (order[j["status"]], j["name"].lower()))

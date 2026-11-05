@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- **Encrypted kiosks.** Kiosks with Encrypt communications on are now Ready and work both ways:
+  phones call them, and they call phones. The gateway speaks HTTPS and WSS to them, with a
+  self-signed certificate it makes on first start, and gives each phone an encrypted port as well.
+  Each kiosk is offered whatever matches its own setting, so a mix of encrypted and unencrypted
+  kiosks works too. The status page marks encrypted kiosks.
+
 ## 0.5.0
 
 - **Announce to all from a phone.** Dial 800 and every Ready kiosk hears you, one way, just like a

@@ -33,6 +33,7 @@ from kig.probe import HttpProber  # noqa: E402
 from kig.protocol import FRAME_BYTES, SAMPLE_RATE  # noqa: E402
 from kig.roster import Roster  # noqa: E402
 from kig.state import State  # noqa: E402
+from kig.tls import Certificate  # noqa: E402
 
 KEY = "ci-intercom-key"
 
@@ -101,17 +102,18 @@ async def wait(cond, seconds: float) -> bool:
     return cond()
 
 
-async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, label: str) -> None:
+async def one_call(s, url, kiosk: FakeKiosk, calls: CallManager, context: str, label: str,
+                   ext: str = "801") -> None:
     kiosk.calls.clear()
     kiosk.frames.clear()
     kiosk.texts.clear()
     kiosk.ws_open.clear()
     kiosk.ws_closed.clear()
     async with s.post(f"{url}/ari/channels", params={
-        "endpoint": "Local/801@default/n", "context": context, "extension": "s", "priority": "1",
+        "endpoint": f"Local/{ext}@default/n", "context": context, "extension": "s", "priority": "1",
         "callerId": "Doorbell <201>",
     }) as r:
-        check(r.status == 200, f"{label}: Asterisk originated a call to 801 (HTTP {r.status})")
+        check(r.status == 200, f"{label}: Asterisk originated a call to {ext} (HTTP {r.status})")
     check(await wait(lambda: kiosk.calls, 10), f"{label}: the kiosk rang")
     note(f"{label}: caller shown on the kiosk: " + kiosk.calls[kiosk.last_call()]["from"]["name"])
     check(await kiosk.answer() == 200, f"{label}: the kiosk answered")
@@ -278,6 +280,27 @@ async def announcement(s, url, kiosk: FakeKiosk, calls: CallManager, label: str)
     check(not left, f"{label}: no channels left {[x['name'] for x in left]}")
 
 
+async def encrypted_call(s, url, roster: Roster, calls: CallManager) -> None:
+    """A kiosk with Encrypt communications on: HTTPS and WSS only, both ways."""
+    label = "call 2c (phone → encrypted kiosk)"
+    hall = FakeKiosk(KEY, name="Hall", kid="hall-id", encrypted=True, cert_dir=Path(tempfile.mkdtemp()))
+    await hall.start()
+    try:
+        roster.heard({"id": hall.id, "name": "Hall", "address": "127.0.0.1", "port": hall.port, "tls": True})
+        await roster.probe_due()
+        check(roster.kiosks[hall.id].status(roster.key_fingerprint) == "ready",
+              f"{label}: the kiosk is Ready")
+        await wait(lambda: roster.kiosks[hall.id].extra.get("extension"), 5)
+        ext = roster.kiosks[hall.id].extra.get("extension", "")
+        check(ext == "802", f"{label}: the kiosk has extension 802 ({ext})")
+        await one_call(s, url, hall, calls, "kig-ci-tone", label, ext="802")
+        check(hall.calls[hall.last_call()]["from"].get("tls") is True,
+              f"{label}: the gateway called as encrypted")
+    finally:
+        roster.kiosks.pop(hall.id, None)
+        await hall.close()
+
+
 async def main(url: str, user: str, password: str) -> None:
     kiosk = FakeKiosk(KEY)
     await kiosk.start()
@@ -286,7 +309,9 @@ async def main(url: str, user: str, password: str) -> None:
     roster.heard({"id": kiosk.id, "name": "Kitchen", "address": "127.0.0.1", "port": kiosk.port})
     await roster.probe_due()
     ari = Ari(url, user, password, "kiosk-intercom")
-    calls = CallManager(roster, State(Path(tempfile.mkdtemp()) / "s.json"), ari, listen_host="127.0.0.1")
+    data = Path(tempfile.mkdtemp())
+    calls = CallManager(roster, State(data / "s.json"), ari, listen_host="127.0.0.1",
+                        certificate=Certificate(data))
     await calls.start()
     stop = asyncio.Event()
     runner = asyncio.ensure_future(ari.run(calls.on_event, stop))
@@ -300,6 +325,8 @@ async def main(url: str, user: str, password: str) -> None:
         await one_call(s, url, kiosk, calls, "kig-ci-rec", "call 2 (phone → kiosk, recorded)")
         flush_report()  # one annotation per call: GitHub cuts long ones
         await announcement(s, url, kiosk, calls, "call 2b (phone dials 800: announce to all)")
+        flush_report()
+        await encrypted_call(s, url, roster, calls)
         flush_report()
 
         phones = PhoneDirectory(

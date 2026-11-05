@@ -115,6 +115,20 @@ way, with a port of its own. Kiosks therefore need to hear the gateway's mDNS, w
 same requirement as for hearing each other. Their Remote Administration switcher lists these
 phones too. Opening one there shows a page explaining what it is.
 
+## Encrypted kiosks
+
+Kiosks with **Encrypt communications** on (Settings → Intercom) work like any other, both ways. The
+status page marks them *encrypted*. Nothing needs setting:
+
+- The gateway talks to them over HTTPS and WSS only, as they talk to each other, and listens on a
+  second, encrypted port for them. Its certificate is self-signed and made on first start; kiosks
+  don't check each other's certificates, and the gateway doesn't check theirs.
+- Each phone gets an encrypted port too. A kiosk is pointed at the port that matches its own
+  setting, so encrypted and unencrypted kiosks can both call the phones.
+- Encrypted kiosks still can't call unencrypted kiosks, or the reverse. That's the kiosks' own rule.
+- Call audio between the gateway and Asterisk stays on this machine (or your LAN, when Asterisk runs
+  elsewhere) and isn't encrypted. Phones' own SIP and RTP are whatever Asterisk is set up to use.
+
 ## Automations
 
 The status page's **Use calls in automations** card has these examples with this app's slug and your
@@ -226,7 +240,7 @@ minute of Home Assistant restarting.
 ## In Home Assistant
 
 `sensor.kiosk_intercom_gateway_kiosks` shows the number of Ready kiosks. Its `kiosks`
-attribute lists each kiosk's name, extension, address, status, area, DND and version.
+attribute lists each kiosk's name, extension, address, status, area, DND, encryption and version.
 
 Kiosks are matched to their ESPHome devices by name, which adds the area and the
 device's `Intercom` sensor state. A kiosk whose name fits no device, or several, is
@@ -235,4 +249,3 @@ listed without them.
 ## Not yet
 
 - A kiosk's Announce to all reaching phones (phones skip it).
-- Kiosks with **Encrypt communications** on. They show **Encrypted** and can't be called.

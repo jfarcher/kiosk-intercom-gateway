@@ -41,7 +41,6 @@ Documentation tab.
   | Do not disturb | The kiosk refuses calls right now. |
   | Different key | The kiosk holds another key. |
   | Intercom off | The kiosk is reachable but its intercom is off. |
-  | Encrypted | The kiosk uses **Encrypt communications**, which the gateway does not speak yet. |
   | Unreachable / Offline | The kiosk does not answer, or no longer announces itself. |
 
 - **Gives every kiosk an extension** (801, 802, …) that it keeps. A call to it over Asterisk's
@@ -135,7 +134,7 @@ clean-up afterwards.
 3. Kiosk → SIP calls. Done in 0.3.
 4. Home Assistant events, actions and sensors. Done in 0.4.
 5. Announce to all from a phone. Done in 0.5.
-6. HTTPS/WSS for kiosks with **Encrypt communications**.
+6. Kiosks with **Encrypt communications** on. Done in 0.6.
 
 ## Related work
 

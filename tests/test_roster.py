@@ -59,7 +59,7 @@ async def test_mdns_kiosk_becomes_ready(prober):
         ((200, identity(enabled=False)), "off"),
         ((200, identity(key="deadbeef")), "key"),
         ((200, identity(dnd=True)), "dnd"),
-        ((200, identity(endpoint={"port": 2325, "tls": True})), "encryption"),
+        ((200, identity(endpoint={"port": 2325, "tls": True})), "ready"),
         ((404, None), "off"),
         ((500, None), "unreachable"),
         (None, "unreachable"),

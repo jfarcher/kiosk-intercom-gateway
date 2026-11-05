@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import ssl
 import struct
 import uuid
 from array import array
@@ -16,6 +17,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from kig.protocol import TokenVerifier, fingerprint, issue_token
+from kig.tls import Certificate, client_context
 
 
 def le_samples(start: int, count: int) -> bytes:
@@ -30,8 +32,14 @@ def ints(le: bytes) -> list[int]:
 
 
 class FakeKiosk:
-    def __init__(self, key: str, name: str = "Kitchen", kid: str = "kitchen-id") -> None:
+    def __init__(self, key: str, name: str = "Kitchen", kid: str = "kitchen-id",
+                 encrypted: bool = False, cert_dir: Any = None) -> None:
         self.key, self.name, self.id = key, name, kid
+        # Encrypt communications, as the kiosk does it: its intercom is HTTPS/WSS
+        # only (426 otherwise, intercom_routes.dart), it refuses a caller without
+        # tls (409), and it calls out over HTTPS only, checking no certificates.
+        self.encrypted = encrypted
+        self.cert_dir = cert_dir
         self.verifier = TokenVerifier(key)
         self.mode = "ring"  # ring, busy, dnd, off
         self.accept_announcements = True
@@ -60,8 +68,13 @@ class FakeKiosk:
         app.router.add_post("/api/intercom/call", self._call)
         app.router.add_post("/api/intercom/call/{call}", self._signal)
         app.router.add_get("/api/intercom/audio/{call}", self._audio)
+        if self.encrypted:
+            app.middlewares.append(_https_only)
         self.server = TestServer(app, host="127.0.0.1")
-        await self.server.start_server()
+        ctx: ssl.SSLContext | None = None
+        if self.encrypted:
+            ctx = Certificate(self.cert_dir).server_context()
+        await self.server.start_server(ssl=ctx)
 
     @property
     def port(self) -> int:
@@ -81,7 +94,8 @@ class FakeKiosk:
     async def _identity(self, _: web.Request) -> web.Response:
         return web.json_response({
             "id": self.id, "name": self.name, "version": "2026.10.9", "enabled": True,
-            "key": fingerprint(self.key), "dnd": self.dnd, "endpoint": {"port": self.port, "tls": False},
+            "key": fingerprint(self.key), "dnd": self.dnd,
+            "endpoint": {"port": self.port, "tls": self.encrypted},
         })
 
     def _token(self, request: web.Request, call: str) -> bool:
@@ -97,6 +111,8 @@ class FakeKiosk:
         if body["kind"] == "broadcast" and not self.accept_announcements:
             return web.json_response({"status": "refused"})
         frm = body["from"]
+        if bool(frm.get("tls")) != self.encrypted:
+            return web.json_response({"status": "tls", "code": 409}, status=409)
         self.calls[body["call"]] = {
             "from": frm, "kind": body["kind"], "address": request.remote, "port": frm["port"],
         }
@@ -142,7 +158,7 @@ class FakeKiosk:
     @property
     def session(self) -> aiohttp.ClientSession:
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=client_context()))
         return self._session
 
     async def place_call(self, port: int, call: str = "kiosk-call-1", kind: str = "call",
@@ -152,14 +168,14 @@ class FakeKiosk:
         token = issue_token(key or self.key, call, self.id)
         frm = {"id": self.id, "name": self.name, "address": "127.0.0.1", "port": self.port,
                "version": "2026.10.9", **({"tls": True} if tls else {})}
-        async with self.session.post(f"http://127.0.0.1:{port}/api/intercom/call",
+        async with self.session.post(f"{self.scheme}://127.0.0.1:{port}/api/intercom/call",
                                      json={"call": call, "kind": kind, "from": frm},
                                      headers={"Authorization": f"Bearer {token}"}) as r:
             return r.status, await r.json()
 
     async def signal_callee(self, action: str, call: str = "kiosk-call-1") -> int:
         token = issue_token(self.key, call, self.id)
-        async with self.session.post(f"http://127.0.0.1:{self.outgoing[call]}/api/intercom/call/{call}",
+        async with self.session.post(f"{self.scheme}://127.0.0.1:{self.outgoing[call]}/api/intercom/call/{call}",
                                      json={"action": action},
                                      headers={"Authorization": f"Bearer {token}"}) as r:
             return r.status
@@ -167,7 +183,8 @@ class FakeKiosk:
     async def _open_audio(self, call: str) -> None:
         token = issue_token(self.key, call, self.id)
         self.out_ws = await self.session.ws_connect(
-            f"ws://127.0.0.1:{self.outgoing[call]}/api/intercom/audio/{call}", params={"token": token})
+            f"{self.scheme.replace('http', 'ws')}://127.0.0.1:{self.outgoing[call]}/api/intercom/audio/{call}",
+            params={"token": token})
         await self.out_ws.send_str(json.dumps({"type": "talk", "on": False}))
         self.out_open.set()
         async for msg in self.out_ws:
@@ -186,15 +203,20 @@ class FakeKiosk:
         await self.out_ws.send_str(json.dumps({"type": "end"}))
         await self.out_ws.close()
 
+    @property
+    def scheme(self) -> str:
+        return "https" if self.encrypted else "http"
+
     def last_call(self) -> str:
         return list(self.calls)[-1]
 
     async def _tell_gateway(self, call: str, action: str) -> int:
         c = self.calls[call]
         token = issue_token(self.key, call, self.id)
-        async with aiohttp.ClientSession() as s:
+        scheme = "https" if c["from"].get("tls") else "http"
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=client_context())) as s:
             async with s.post(
-                f"http://{c['address']}:{c['port']}/api/intercom/call/{call}",
+                f"{scheme}://{c['address']}:{c['port']}/api/intercom/call/{call}",
                 json={"action": action},
                 headers={"Authorization": f"Bearer {token}"},
             ) as r:
@@ -214,6 +236,14 @@ class FakeKiosk:
         assert self.ws is not None
         await self.ws.send_str(json.dumps({"type": "end"}))
         await self.ws.close()
+
+
+@web.middleware
+async def _https_only(request: web.Request, handler: Any) -> web.StreamResponse:
+    if request.path.startswith("/api/intercom/") and not request.path.endswith("/identity") \
+            and not request.secure:
+        return web.json_response({"status": "tls", "error": "Intercom requires HTTPS"}, status=426)
+    return await handler(request)
 
 
 class FakeAudioSocket:

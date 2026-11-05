@@ -16,6 +16,9 @@ caller):
 1. ``POST <kiosk>/api/intercom/call`` ``{call, kind: "call", from}`` → ``ringing``
    or ``auto`` (answers itself after a countdown), else ``busy``/``dnd``/``off``/
    ``refused``, 403 for another key, 409 for encryption.
+ - Kiosks with Encrypt communications on take all of this over HTTPS and WSS
+   only, and refuse a caller whose ``from`` lacks ``tls: true`` (409). The
+   gateway listens on a second, TLS port for them (tls.py).
 2. The kiosk answers by ``POST <gateway>/api/intercom/call/<id>`` ``{action:
    "answer"}`` to the address the call came from and the ``from.port``;
    ``decline`` and ``missed`` arrive the same way.
@@ -43,6 +46,7 @@ from .protocol import TokenVerifier, issue_token
 from .roster import Kiosk, Roster
 from .media import AudioSocketServer, MediaLeg, rms
 from .state import State
+from .tls import Certificate, client_context
 
 _LOG = logging.getLogger(__name__)
 
@@ -186,7 +190,9 @@ class CallManager:
         listen_port: int = 0,
         media_host: str = "127.0.0.1",
         announce_extension: str = "800",
+        certificate: Certificate | None = None,
     ) -> None:
+        self.certificate = certificate
         self.roster = roster
         self.state = state
         self.ari = ari
@@ -208,6 +214,7 @@ class CallManager:
         self._ws_http: aiohttp.ClientSession | None = None
         self._runner: web.AppRunner | None = None
         self.port = 0
+        self.tls_port = 0  # the same listener over TLS, for encrypted kiosks
         self.phones: Any = None  # PhoneDirectory, when kiosks may call phones
         # Told of every call as it rings, is answered and ends (Home Assistant events).
         self.listeners: list[Callable[[dict[str, Any]], None]] = []
@@ -299,14 +306,19 @@ class CallManager:
     @property
     def http(self) -> aiohttp.ClientSession:
         if self._http is None:
-            self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=6))
+            self._http = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=6), connector=aiohttp.TCPConnector(ssl=client_context())
+            )
         return self._http
 
     @property
     def ws_http(self) -> aiohttp.ClientSession:
         # No total timeout: it would cut a live call's socket.
         if self._ws_http is None:
-            self._ws_http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, connect=6))
+            self._ws_http = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=None, connect=6),
+                connector=aiohttp.TCPConnector(ssl=client_context()),
+            )
         return self._ws_http
 
     async def start(self) -> None:
@@ -321,6 +333,14 @@ class CallManager:
         await site.start()
         self.port = int(self._runner.addresses[0][1])
         _LOG.info("intercom listener on port %d", self.port)
+        if self.certificate is not None:
+            try:
+                ctx = self.certificate.server_context()
+                await web.TCPSite(self._runner, self.listen_host, 0, ssl_context=ctx).start()
+                self.tls_port = next(int(a[1]) for a in self._runner.addresses if int(a[1]) != self.port)
+                _LOG.info("encrypted intercom listener on port %d", self.tls_port)
+            except Exception as err:  # noqa: BLE001 - encrypted kiosks only; the rest still work
+                _LOG.warning("no encrypted listener, so encrypted kiosks can't be called: %s", err)
 
     async def stop(self) -> None:
         for c in list(self.calls.values()):
@@ -342,6 +362,7 @@ class CallManager:
             "asterisk_version": self.ari.asterisk_version if self.ari else "",
             "app": self.ari.app if self.ari else "",
             "listener_port": self.port,
+            "tls_port": self.tls_port,
             "media_port": self.media_server.port,
             "calls": [c.to_json() for c in self.calls.values()]
             + [a.to_json() for a in self.announcements.values()],
@@ -352,7 +373,25 @@ class CallManager:
 
     # ── the intercom listener ────────────────────────────────────────
 
-    async def _identity(self, _: web.Request) -> web.Response:
+    def encrypted_for(self, request: web.Request) -> bool:
+        """Whether whoever is asking wants everything encrypted: the kiosk at that
+        address if the gateway knows it, else most of the kiosks."""
+        if not self.tls_port:
+            return False
+        if request.secure:
+            return True
+        here = [k for k in self.roster.kiosks.values() if k.address == request.remote and k.enabled]
+        if here:
+            return any(k.encrypted for k in here)
+        known = [k for k in self.roster.kiosks.values() if k.enabled]
+        return sum(k.encrypted for k in known) * 2 > len(known)
+
+    def endpoint_for(self, request: web.Request, plain: int, tls: int) -> dict[str, Any]:
+        if tls and self.encrypted_for(request):
+            return {"port": tls, "tls": True}
+        return {"port": plain, "tls": False}
+
+    async def _identity(self, request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "id": self.state.gateway_id,
@@ -361,7 +400,7 @@ class CallManager:
                 "enabled": True,
                 "key": self.roster.key_fingerprint,
                 "dnd": False,
-                "endpoint": {"port": self.port, "tls": False},
+                "endpoint": self.endpoint_for(request, self.port, self.tls_port),
             }
         )
 
@@ -518,8 +557,8 @@ class CallManager:
             return
         if code == 403:
             _LOG.warning("%s refused the call: different intercom key", k.name)
-        elif code == 409:
-            _LOG.warning("%s refused the call: it requires encrypted intercom", k.name)
+        elif code in (409, 426):
+            _LOG.warning("%s refused the call: its encryption setting doesn't match", k.name)
         else:
             _LOG.info("%s refused the call: %s", k.name, status)
         reason = {"busy": "busy", "dnd": "dnd"}.get(status, "unavailable")
@@ -708,7 +747,7 @@ class CallManager:
                 "enabled": bool(self.ari and self.ari.connected),
                 "key": self.roster.key_fingerprint,
                 "dnd": False,
-                "endpoint": {"port": phone.port, "tls": False},
+                "endpoint": self.endpoint_for(request, phone.port, phone.tls_port),
             }
         )
 
@@ -726,7 +765,9 @@ class CallManager:
         self._verifier.key = self.roster.key
         if not self._verifier.verify(token, call_id):
             return web.json_response({"status": "key"}, status=403)
-        if frm.get("tls"):
+        encrypted = bool(frm.get("tls"))
+        if encrypted and not (request.secure and phone.tls_port):
+            # As a kiosk: call data from an encrypted kiosk must not travel in the clear.
             return web.json_response({"status": "tls"}, status=409)
         if body.get("kind") == "broadcast":
             return web.json_response({"status": "refused"})  # Announce to all skips phones
@@ -738,11 +779,11 @@ class CallManager:
         address = request.remote or str(frm.get("address") or "")
         port = int(frm.get("port") or 2324)
         if k is None:  # a kiosk the gateway has not heard of yet
-            k = Kiosk(key=str(frm["id"]), address=address, port=port, id=str(frm["id"]))
+            k = Kiosk(key=str(frm["id"]), address=address, port=port, id=str(frm["id"]), tls=encrypted)
             k.name = str(frm.get("name") or address)
         c = Call(
             id=call_id, kiosk=k, channel="", caller=phone.label, direction="out",
-            peer_url=f"http://{_host(address)}:{port}", phone=phone.resource,
+            peer_url=f"{'https' if encrypted else 'http'}://{_host(address)}:{port}", phone=phone.resource,
         )
         self.calls[c.id] = c
         _LOG.info("%s calling %s (%s)", k.name, phone.label, c.id)
@@ -1110,8 +1151,11 @@ class CallManager:
             "id": phone.id if phone is not None and phone.runner is not None else self.state.gateway_id,
             "name": caller,
             "address": local_address_towards(k.address),
-            "port": self.port,
             "version": __version__,
+            # Where the kiosk sends its answer and hangup: over TLS to an encrypted
+            # kiosk, which refuses a caller without tls (409).
+            **({"port": self.tls_port, "tls": True} if k.encrypted and self.tls_port
+               else {"port": self.port}),
         }
 
     async def _post(self, c: Call, path: str, body: dict[str, Any]) -> tuple[str, int | None]:

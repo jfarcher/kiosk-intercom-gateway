@@ -43,6 +43,7 @@ class Phone:
     state: str = "unknown"  # Asterisk's: online, offline, unknown
     busy: bool = False
     port: int = 0
+    tls_port: int = 0  # the same listener over TLS, for encrypted kiosks
     gateway_id: str = ""
     runner: web.AppRunner | None = None
     # Kiosks that found this phone: they check its identity every ~30 s.
@@ -62,7 +63,8 @@ class Phone:
 
     def to_json(self) -> dict[str, Any]:
         return {"extension": self.resource, "name": self.label, "state": self.state,
-                "busy": self.busy, "offered": self.offered and self.runner is not None, "port": self.port}
+                "busy": self.busy, "offered": self.offered and self.runner is not None, "port": self.port,
+                "tls_port": self.tls_port}
 
 
 def parse_phones(entries: list[str]) -> dict[str, str]:
@@ -106,7 +108,9 @@ class PhoneDirectory:
         configured: list[str] | None = None,
         advertise_address: str = "",
         listen_host: str = "0.0.0.0",
+        certificate: Any = None,
     ) -> None:
+        self.certificate = certificate
         self.ari = ari
         self.roster = roster
         self.state = state
@@ -243,22 +247,37 @@ class PhoneDirectory:
             app.router.add_route(method, path, _bind(handler, p))
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
-        preferred = self.state.phone_ports.get(p.resource, 0)
+        try:
+            p.port = await self._site(runner, p.resource)
+        except OSError:
+            await runner.cleanup()
+            raise
+        p.runner = runner
+        p.tls_port = 0
+        if self.certificate is not None:
+            try:
+                p.tls_port = await self._site(runner, f"{p.resource}/tls", self.certificate.server_context())
+            except Exception as err:  # noqa: BLE001 - only encrypted kiosks lose it
+                _LOG.warning("no encrypted port for %s: %s", p.label, err)
+        _LOG.info("offering %s to the kiosks on port %d%s", p.label, p.port,
+                  f" (encrypted {p.tls_port})" if p.tls_port else "")
+
+    async def _site(self, runner: web.AppRunner, key: str, ssl_context: Any = None) -> int:
+        """Listens on the port this phone had before (kiosks remember it), or a free one."""
+        preferred = self.state.phone_ports.get(key, 0)
+        before = {int(a[1]) for a in runner.addresses}
         for port in ((preferred, 0) if preferred else (0,)):
             try:
-                site = web.TCPSite(runner, self.listen_host, port)
-                await site.start()
+                await web.TCPSite(runner, self.listen_host, port, ssl_context=ssl_context).start()
                 break
             except OSError:
                 if port == 0:
-                    await runner.cleanup()
                     raise
-        p.runner = runner
-        p.port = int(runner.addresses[0][1])
-        if self.state.phone_ports.get(p.resource) != p.port:
-            self.state.phone_ports[p.resource] = p.port
+        got = next(int(a[1]) for a in runner.addresses if int(a[1]) not in before)
+        if self.state.phone_ports.get(key) != got:
+            self.state.phone_ports[key] = got
             self.state.save()
-        _LOG.info("offering %s to the kiosks on port %d", p.label, p.port)
+        return got
 
     async def _drop(self, p: Phone, keep: bool = False) -> None:
         if p.runner is not None:

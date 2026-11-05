@@ -33,7 +33,7 @@ PUBLISH_INTERVAL = 60.0  # the sensor, and kiosks' HA call state
 CALLS_ENTITY = "sensor.kiosk_intercom_gateway_calls"
 CALL_EVENT = "kiosk_intercom_gateway_call"
 PHONE_ENTITY = "binary_sensor.kiosk_intercom_phone_{slug}"
-SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "version")
+SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "encrypted", "version")
 
 
 SELF_INFO: dict[str, Any] = {}  # the Supervisor's /addons/self/info, once read
