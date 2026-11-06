@@ -57,6 +57,10 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--idle); }
   .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
   details { margin-top: 10px; }
+  .problems { border-color: var(--warn); }
+  .problems div + div { margin-top: 6px; }
+  .setup { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .setup p { margin: 0 0 8px; font-size: 14px; }
   summary { cursor: pointer; color: var(--accent); font-size: 14px; }
   .steps { margin: 8px 0 0; padding-left: 20px; }
   .steps li { margin: 0 0 12px; }
@@ -107,6 +111,7 @@
     </form>
     <div class="msg" id="keymsg"></div>
   </div>
+  <div class="card problems" id="problems" hidden></div>
   <div class="card" id="asterisk">Loading…</div>
   <div class="card" id="phones" hidden></div>
   <div class="card" id="automations" hidden></div>
@@ -172,7 +177,50 @@ const ENDED = {ended: "ended", declined: "declined", busy: "kiosk busy", dnd: "d
   failed: "connection failed"};
 let setupOpen = null;
 
-function renderAsterisk(a) {
+function renderProblems(list) {
+  const card = $("problems");
+  card.hidden = !list.length;
+  card.innerHTML = list.length ? `<h2><span class="dot warn"></span>${list.length === 1 ? "A problem" : list.length +
+    " problems"}</h2>` + list.map((p) => `<div class="line">${esc(p.message)}</div>`).join("") : "";
+}
+
+let setupMsg = null, setupBusy = false;
+
+function setupBlock(a, st) {
+  if (!st || !st.available) return "";
+  const open = st.slug ? `<a href="/hassio/addon/${esc(st.slug)}/info" target="_top">Open the Asterisk app</a>` : "";
+  if (setupMsg) return `<div class="setup"><p class="msg ${setupMsg.cls}">${setupMsg.html}</p></div>`;
+  if (st.done && a.connected) return "";
+  if (st.done) return `<div class="setup"><p>Asterisk is set up for kiosk calls. If it hasn't been restarted
+    since, restart the Asterisk app so it reads the new settings. ${open}</p></div>`;
+  return `<div class="setup"><p>This app can set Asterisk up for you: it adds its ARI user to
+    <code>custom/ari.conf</code> and the kiosk lines to <code>custom/extensions.conf</code> in the Asterisk app's
+    folder, keeping everything else in them and a copy of each file as it was. Then restart the Asterisk app.</p>
+    <button type="button" class="primary" id="setupgo" ${setupBusy ? "disabled" : ""}>Set up Asterisk for me</button></div>`;
+}
+
+async function runSetup() {
+  setupBusy = true; load();
+  try {
+    const r = await (await fetch("api/asterisk/setup", {method: "POST"})).json();
+    const open = r.asterisk_slug
+      ? ` <a href="/hassio/addon/${esc(r.asterisk_slug)}/info" target="_top">Open the Asterisk app</a> and restart it.`
+      : " Restart the Asterisk app.";
+    if (!r.ok) setupMsg = {cls: "err", html: esc(r.error || "Setup failed.")};
+    else {
+      const wrote = r.changed.length ? `Wrote ${r.changed.map(esc).join(" and ")}` : "Nothing needed changing";
+      const kept = r.backups.length ? ` (the old ones are kept as ${r.backups.map(esc).join(", ")})` : "";
+      setupMsg = {cls: "ok", html: `${wrote}${kept}.` + (r.restart_self
+        ? " This app restarts now to connect; give it a few seconds." : "") +
+        (r.note ? " " + esc(r.note) : "") + (r.changed.length ? open : "")};
+    }
+  } catch (err) {
+    setupMsg = {cls: "err", html: "Setup failed: " + esc(String(err))};
+  }
+  setupBusy = false; load();
+}
+
+function renderAsterisk(a, st) {
   const configured = a.enabled, ok = configured && a.connected;
   const dot = ok ? "ok" : configured ? "bad" : "warn";
   const state = ok ? `Connected to Asterisk ${esc(a.asterisk_version)}`
@@ -192,13 +240,15 @@ function renderAsterisk(a) {
   const ext = `[general]\nstatic=yes\n\n[default]\ninclude => parkedcalls\nexten => 444,1,Park(,s)\n` +
     `exten => 555,1,ParkedCall(default,701)\n${lines}exten => _X!,1,Dial(\${PJSIP_DIAL_CONTACTS(\${EXTEN})})\n\n` +
     `[parkedcallstimeout]\nexten => s,1,Hangup()\n`;
-  if (setupOpen === null) setupOpen = !ok;
+  if (setupOpen === null) setupOpen = !ok && !(st && st.available);  // the button first, when offered
   const dir = "/addon_configs/b35499aa_asterisk/asterisk";
   $("asterisk").innerHTML = `
     <h2><span class="dot ${dot}"></span>Asterisk</h2>
     <div class="line">${state}${ok ? ` · app <code>${esc(app)}</code> at ${esc(a.ari_url)}` : ""}</div>
     ${live || recent ? `<div class="calls">${live}${recent}</div>` : ""}
-    <details id="setup" ${setupOpen ? "open" : ""}><summary>Set up Asterisk for kiosk calls</summary>
+    ${setupBlock(a, st)}
+    <details id="setup" ${setupOpen ? "open" : ""}><summary>${st && st.available
+      ? "Or set it up by hand" : "Set up Asterisk for kiosk calls"}</summary>
     <ol class="steps">
       <li>Install the <b>Asterisk</b> app (TECH7Fox) and start it once, so it creates its config folders.</li>
       <li>Create <code>${dir}/custom/ari.conf</code> (with the File editor or Samba app):${snip("ari", ari)}</li>
@@ -214,6 +264,7 @@ function renderAsterisk(a) {
           every Ready kiosk at once.</li>
     </ol></details>`;
   $("setup").ontoggle = (e) => { setupOpen = e.target.open; };
+  if ($("setupgo")) $("setupgo").onclick = runSetup;
 }
 
 let phonesDirty = false, phonesMsg = "";
@@ -373,7 +424,8 @@ async function load() {
     showKeyCard();
     if ($("changekey")) $("changekey").onclick = () => { keyOpen = true; showKeyCard(); $("keyinput").focus(); };
     $("probe").onclick = async () => { await fetch("api/probe", {method: "POST"}); setTimeout(load, 1500); };
-    if (g.asterisk) renderAsterisk(g.asterisk);
+    renderProblems(g.problems || []);
+    if (g.asterisk) renderAsterisk(g.asterisk, g.asterisk_setup);
     if (g.asterisk) renderPhones(g);
     renderAutomations(g, ks);
     if (numEditing) return; // keep the number being edited

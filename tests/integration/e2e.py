@@ -25,6 +25,7 @@ import aiohttp
 sys.path[:0] = [str(Path(__file__).parents[1]), str(Path(__file__).parents[2] / "kiosk_intercom_gateway/src")]
 
 from fakes import FakeKiosk, ints  # noqa: E402
+from kig import asterisk_setup  # noqa: E402
 from kig.ari import Ari  # noqa: E402
 from kig.bridge import CallManager  # noqa: E402
 from kig.commands import handle  # noqa: E402
@@ -374,8 +375,28 @@ def analyse_recording(path: str) -> None:
     flush_report()
 
 
+def set_up(folder: str, user: str, password: str) -> None:
+    """Asterisk's custom/ files as the page's Set up Asterisk button leaves them:
+    no ari.conf and the kiosk lines taken out first, so the real Asterisk then
+    runs on exactly what the button writes."""
+    custom = Path(folder) / "custom"
+    (custom / "ari.conf").unlink(missing_ok=True)
+    ext = custom / "extensions.conf"
+    lines = ext.read_text().splitlines()
+    i = next(n for n, line in enumerate(lines) if line.startswith("; Kiosk intercom"))
+    del lines[i:i + 4]
+    assert "Stasis(" not in "\n".join(lines)
+    ext.write_text("\n".join(lines) + "\n")
+    r = asterisk_setup.apply(Path(folder), user, "kiosk-intercom", 801, password=password)
+    assert r.changed == ["ari.conf", "extensions.conf"], r
+    print(f"set up {folder}: wrote {', '.join(r.changed)}, kept {', '.join(r.backups)}")
+    print((custom / "ari.conf").read_text().replace(password, "***"))
+
+
 if __name__ == "__main__":
-    if sys.argv[1] == "--recording":
+    if sys.argv[1] == "--setup":
+        set_up(*sys.argv[2:5])
+    elif sys.argv[1] == "--recording":
         for path in sys.argv[2:]:
             analyse_recording(path)  # each must hear the kiosk's 1000 Hz
     else:

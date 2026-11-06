@@ -1,0 +1,79 @@
+name: Publish images
+
+# Prebuilt app images, so Home Assistant pulls the app instead of building it on
+# every install and update. config.yaml's image: names them; the Supervisor pulls
+# <image>:<version>. A version is published once and never overwritten.
+on:
+  push:
+    branches: [main]
+    paths: ["kiosk_intercom_gateway/**", ".github/workflows/publish.yaml"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version and image name
+        id: v
+        run: |
+          version=$(sed -n 's/^version: "\(.*\)"$/\1/p' kiosk_intercom_gateway/config.yaml)
+          test -n "$version"
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/$owner/${{ matrix.arch }}-kiosk-intercom-gateway" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Published already?
+        id: have
+        run: |
+          if docker manifest inspect "${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}" >/dev/null 2>&1; then
+            echo "::notice title=${{ matrix.arch }}::${{ steps.v.outputs.version }} is published already; not rebuilt"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/setup-qemu-action@v3
+        if: steps.have.outputs.skip != 'true' && matrix.arch != 'amd64'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.have.outputs.skip != 'true'
+      - uses: docker/build-push-action@v6
+        if: steps.have.outputs.skip != 'true'
+        with:
+          context: kiosk_intercom_gateway
+          platforms: ${{ matrix.platform }}
+          build-args: BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base:latest
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
+            ${{ steps.v.outputs.image }}:latest
+          labels: |
+            io.hass.type=addon
+            io.hass.arch=${{ matrix.arch }}
+            io.hass.version=${{ steps.v.outputs.version }}
+            io.hass.name=Kiosk Intercom Gateway
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - name: Smoke test the published image
+        if: steps.have.outputs.skip != 'true'
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint python3 \
+            "${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}" \
+            -c "import kig, kig.tls, aiohttp, zeroconf, cryptography; print('kig', kig.__version__)"

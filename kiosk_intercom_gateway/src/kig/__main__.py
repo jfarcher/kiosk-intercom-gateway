@@ -16,7 +16,8 @@ from .bridge import CallManager
 from .commands import read_stdin
 from .discovery import Discovery
 from .phones import PhoneDirectory
-from .ha import SELF_INFO, HomeAssistant, save_options, supervisor_ingress_port
+from . import asterisk_setup
+from .ha import SELF_INFO, HomeAssistant, restart_self, save_options, supervisor_ingress_port
 from .probe import HttpProber
 from .roster import Roster
 from .state import State
@@ -69,6 +70,7 @@ async def main() -> None:
                 _LOG.warning("ignoring extra kiosk %r: expected host or host:port", entry)
 
         ha = HomeAssistant(roster)
+        ha.notify = cfg.notify_problems
         roster.on_change(ha.changed)
 
         ari = None
@@ -117,8 +119,15 @@ async def main() -> None:
             calls.phones = phones
             stack.push_async_callback(phones.close)
 
+        ha.state = state
+        ari_user = cfg.ari_username or "kiosk-gateway"
+
         def info() -> dict:
+            status = calls.status()
+            problems = ha.health.check(roster.snapshot(), status, status.get("phones"))
             return {
+                "problems": [p.to_json() for p in problems],
+                "asterisk_setup": asterisk_setup.status(asterisk_setup.find(), ari_user, cfg.ari_app),
                 "version": __version__,
                 "key_fingerprint": roster.key_fingerprint,
                 "discovery": cfg.mdns,
@@ -126,7 +135,7 @@ async def main() -> None:
                 "slug": SELF_INFO.get("slug", ""),
                 "phones_auto": phones.auto if phones else True,
                 "phones_enabled": phones is not None,
-                "asterisk": {**calls.status(), "ari_url": cfg.ari_url, "username": cfg.ari_username,
+                "asterisk": {**status, "ari_url": cfg.ari_url, "username": cfg.ari_username,
                              "extension_start": cfg.extension_start, "media_host": cfg.media_host},
             }
 
@@ -161,10 +170,48 @@ async def main() -> None:
                 return {"ok": True, "saved": False, "note": f"Applied, but not saved ({err})."}
             return {"ok": True, "saved": True}
 
+        async def set_up_asterisk() -> dict:
+            """The page's Asterisk steps, done: files written, the ARI user saved, and
+            this app restarted to connect (Asterisk needs restarting by hand)."""
+            folder = asterisk_setup.find()
+            if folder is None:
+                return {"ok": False, "error": "The Asterisk app's folder isn't visible. Is the Asterisk app "
+                        "(TECH7Fox) installed and started once?"}
+            keep = cfg.ari_password if cfg.ari_username == ari_user else ""
+            try:
+                result = await asyncio.to_thread(
+                    asterisk_setup.apply, folder, ari_user, cfg.ari_app, cfg.extension_start, keep)
+            except OSError as err:
+                return {"ok": False, "error": f"Couldn't write the Asterisk files: {err}"}
+            reply = {"ok": True, **result.to_json(), "asterisk_slug": folder.parent.name}
+            fresh = (cfg.ari_username, cfg.ari_password) != (ari_user, result.password)
+            if not fresh:
+                return {**reply, "restart_self": False}
+            if not config.under_supervisor():
+                return {**reply, "restart_self": False,
+                        "note": f"Set ARI username {ari_user} and password {result.password}, then restart."}
+            try:
+                await save_options({"ari_username": ari_user, "ari_password": result.password},
+                                   config.raw_options())
+            except Exception as err:
+                return {**reply, "ok": False, "error": f"Files written, but the ARI user wasn't saved: {err}"}
+
+            async def later() -> None:
+                await asyncio.sleep(2)  # let the page get its answer first
+                try:
+                    await restart_self()
+                except Exception as err:
+                    _LOG.warning("couldn't restart to connect to Asterisk; restart this app: %s", err)
+
+            restart_task = asyncio.ensure_future(later())
+            background.add(restart_task)
+            return {**reply, "restart_self": True}
+
+        background: set[asyncio.Future] = set()
         port = await web_port(cfg)
         runner = web.AppRunner(
             make_app(roster, info, cfg.ingress_only, set_key=set_key, set_phones=set_phones,
-                     set_extension=calls.set_extension),
+                     set_extension=calls.set_extension, set_up_asterisk=set_up_asterisk),
             access_log=None,
         )
         await runner.setup()

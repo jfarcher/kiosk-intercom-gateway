@@ -60,6 +60,8 @@ jobs:
           mkdir -p ast/asterisk
           cp tests/integration/asterisk/config.json ast/config.json
           cp -r tests/integration/asterisk/custom ast/asterisk/custom
+          # Asterisk runs on what the page's "Set up Asterisk for me" button writes.
+          python3 tests/integration/e2e.py --setup ast/asterisk kig ci-secret
           docker run -d --name ast --network host -t -v "$PWD/ast:/config" \
             ghcr.io/tech7fox/asterisk-hass-addon:latest
           for i in $(seq 1 90); do

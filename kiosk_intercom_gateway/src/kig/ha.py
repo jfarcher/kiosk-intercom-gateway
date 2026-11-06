@@ -17,6 +17,7 @@ from typing import Any
 
 import aiohttp
 
+from .health import Health
 from .config import supervisor_token
 from .roster import Roster
 
@@ -33,6 +34,9 @@ PUBLISH_INTERVAL = 60.0  # the sensor, and kiosks' HA call state
 CALLS_ENTITY = "sensor.kiosk_intercom_gateway_calls"
 CALL_EVENT = "kiosk_intercom_gateway_call"
 PHONE_ENTITY = "binary_sensor.kiosk_intercom_phone_{slug}"
+PROBLEM_ENTITY = "binary_sensor.kiosk_intercom_gateway_problem"
+ASTERISK_ENTITY = "binary_sensor.kiosk_intercom_gateway_asterisk"
+NOTIFICATION_ID = "kiosk_intercom_gateway_{id}"
 SENSOR_FIELDS = ("name", "id", "address", "extension", "status", "area", "dnd", "encrypted", "version")
 
 
@@ -84,6 +88,17 @@ async def save_options(
                 except (ValueError, aiohttp.ContentTypeError):
                     msg = None
                 raise RuntimeError(msg or f"Supervisor answered HTTP {r.status}")
+
+
+async def restart_self(token: str | None = None, url: str = "http://supervisor/addons/self/restart") -> None:
+    """Asks the Supervisor to restart this app (to pick up new ARI settings)."""
+    token = token or supervisor_token()
+    if not token:
+        raise RuntimeError("not running under the Supervisor")
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+        async with s.post(url, headers={"Authorization": f"Bearer {token}"}) as r:
+            if r.status >= 300:
+                raise RuntimeError(f"Supervisor answered HTTP {r.status}")
 
 
 def _norm(text: str) -> str:
@@ -140,6 +155,10 @@ class HomeAssistant:
         self.calls: Any = None  # CallManager, for the calls and phone sensors
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
         self._phone_entities: set[str] = set()
+        self.health = Health()
+        self.notify = True  # notifications for problems; the problem sensor regardless
+        self.state: Any = None  # State: which notifications are out, across restarts
+        self._notified: set[str] = set()
 
     @property
     def available(self) -> bool:
@@ -253,6 +272,55 @@ class HomeAssistant:
         if self.calls is not None:
             await self._publish_calls()
 
+    async def publish_health(self) -> None:
+        """The problem and Asterisk sensors, and a notification per problem
+        (dismissed once it's fixed)."""
+        status = self.calls.status() if self.calls is not None else None
+        problems = self.health.check(self.roster.snapshot(), status, (status or {}).get("phones"))
+        await self._set_state(PROBLEM_ENTITY, {
+            "state": "on" if problems else "off",
+            "attributes": {
+                "friendly_name": "Kiosk intercom: problem",
+                "device_class": "problem",
+                "problems": [{"id": p.id, "kind": p.kind, "message": p.message} for p in problems],
+            },
+        })
+        if status is not None and status.get("enabled"):
+            await self._set_state(ASTERISK_ENTITY, {
+                "state": "on" if status.get("connected") else "off",
+                "attributes": {
+                    "friendly_name": "Kiosk intercom: Asterisk",
+                    "device_class": "connectivity",
+                    "asterisk_version": status.get("asterisk_version", ""),
+                    "error": status.get("error", ""),
+                },
+            })
+        if self.state is not None and not self._notified:
+            self._notified = set(self.state.notified)
+        want = {p.id: p for p in problems if p.notify} if self.notify else {}
+        for pid, p in want.items():
+            if pid not in self._notified and await self._service("persistent_notification", "create", {
+                "notification_id": NOTIFICATION_ID.format(id=pid), "title": p.title, "message": p.message,
+            }):
+                self._notified.add(pid)
+        for pid in sorted(self._notified - want.keys()):
+            if await self._service("persistent_notification", "dismiss",
+                                   {"notification_id": NOTIFICATION_ID.format(id=pid)}):
+                self._notified.discard(pid)
+        if self.state is not None and sorted(self._notified) != sorted(self.state.notified):
+            self.state.notified = sorted(self._notified)
+            self.state.save()
+
+    async def _service(self, domain: str, service: str, data: dict[str, Any]) -> bool:
+        assert self._session is not None
+        async with self._session.post(
+            f"{self.core_api}/services/{domain}/{service}", headers=self._headers, data=json.dumps(data)
+        ) as r:
+            if r.status >= 300:
+                _LOG.warning("%s.%s failed: HTTP %s", domain, service, r.status)
+                return False
+            return True
+
     async def _set_state(self, entity: str, body: dict[str, Any]) -> None:
         assert self._session is not None
         async with self._session.post(
@@ -328,7 +396,8 @@ class HomeAssistant:
                     except Exception as err:  # HA restarting, etc.
                         _LOG.warning("reading Home Assistant's device registry failed: %s", err)
                         next_refresh = loop.time() + publish_interval  # try again sooner
-                steps = ((self.enrich, "reading kiosks' states"), (self.publish, "publishing the sensor"))
+                steps = ((self.enrich, "reading kiosks' states"), (self.publish, "publishing the sensor"),
+                         (self.publish_health, "publishing problems"))
                 for step, what in steps:
                     try:
                         await step()

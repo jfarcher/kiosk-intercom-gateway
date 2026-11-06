@@ -67,5 +67,10 @@ configuration:
     description: >-
       Dial it from a phone to talk to every Ready kiosk at once. 800 by
       default, which the 8XX dialplan line already sends here.
+  notify_problems:
+    name: Notify about problems
+    description: >-
+      A Home Assistant notification when Asterisk is disconnected, a kiosk holds a different key or a kiosk
+      has been unavailable for 10 minutes, cleared once it's fixed. The problem sensor is kept either way.
   log_level:
     name: Log level

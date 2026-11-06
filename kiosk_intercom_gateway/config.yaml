@@ -1,8 +1,10 @@
 name: Kiosk Intercom Gateway
-version: "0.6.0"
+version: "0.7.0"
 slug: kiosk_intercom_gateway
 description: Calls between Kiosk Satellite kiosks and SIP phones, through Asterisk
 url: https://github.com/jfarcher/kiosk-intercom-gateway
+# Prebuilt by .github/workflows/publish.yaml, so installs and updates download it.
+image: ghcr.io/jfarcher/{arch}-kiosk-intercom-gateway
 arch:
   - aarch64
   - amd64
@@ -21,6 +23,11 @@ homeassistant_api: true
 # Actions from automations arrive on stdin (hassio.addon_stdin).
 stdin: true
 stage: experimental
+# The Asterisk app's folder, for "Set up Asterisk" on the page (custom/ari.conf and
+# custom/extensions.conf, nothing else).
+map:
+  - type: all_addon_configs
+    read_only: false
 options:
   intercom_key: ""
   extra_kiosks: []
@@ -33,6 +40,7 @@ options:
   ring_timeout: 60
   offer_phones: true
   phones: []
+  notify_problems: true
   log_level: info
 schema:
   intercom_key: password?
@@ -53,4 +61,5 @@ schema:
   phones:
     - str
   advertise_address: str?
+  notify_problems: bool
   log_level: list(debug|info|warning|error)

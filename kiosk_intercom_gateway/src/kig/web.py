@@ -21,6 +21,7 @@ def make_app(
     on_probe: Callable[[], Any] | None = None,
     set_key: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
     set_phones: Callable[[list[str] | None], Awaitable[dict[str, Any]]] | None = None,
+    set_up_asterisk: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     set_extension: Callable[[str, str], dict[str, Any]] | None = None,
 ) -> web.Application:
     @web.middleware
@@ -96,6 +97,13 @@ def make_app(
         return web.json_response(result, status=status)
 
     app = web.Application(middlewares=[only_ingress])
+    async def asterisk(request: web.Request) -> web.Response:
+        if set_up_asterisk is None:
+            return web.json_response({"ok": False, "error": "Not available."}, status=400)
+        result = await set_up_asterisk()
+        return web.json_response(result, status=200 if result.get("ok") else 409)
+
+    app.router.add_post("/api/asterisk/setup", asterisk)
     app.router.add_post("/api/extension", extension)
     app.router.add_post("/api/phones", phones)
     app.router.add_post("/api/key", key)

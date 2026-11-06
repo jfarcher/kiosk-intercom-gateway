@@ -18,8 +18,25 @@ added under **Extra kiosks** as `host` or `host:port` (remote admin port, 2324 b
 
 ## 2. Connect to Asterisk
 
-This works with the **Asterisk** app for Home Assistant (TECH7Fox). The status page
-shows these steps with your own values filled in and copy buttons.
+This works with the **Asterisk** app for Home Assistant (TECH7Fox).
+
+The quick way: install the Asterisk app and start it once, then press **Set up Asterisk for me** on
+this app's status page and restart the Asterisk app when it says so. The button:
+
+- adds this app's ARI user (with a made-up password) to the Asterisk app's `custom/ari.conf`, and
+  turns ARI on;
+- adds the kiosk lines to `custom/extensions.conf`, inside `[default]` above the `_X!` line, or
+  writes the Asterisk app's default dialplan with them in place if there's no such file;
+- keeps everything else in both files, and a copy of each as it was before
+  (`ari.conf.before-kiosk-gateway`, `extensions.conf.before-kiosk-gateway`);
+- saves the ARI username and password in this app's Configuration and restarts this app.
+
+Pressing it again changes nothing. It needs this app's access to other apps' configuration folders,
+which Home Assistant lists under the app's permissions; it touches only those two files. This app
+can't restart the Asterisk app itself, which would need more permissions, so the button links to it.
+
+To do it by hand instead (or with Asterisk on another machine), the status page shows these steps
+with your own values filled in and copy buttons.
 
 1. Install the Asterisk app and start it once.
 2. Create `/addon_configs/b35499aa_asterisk/asterisk/custom/ari.conf`:
@@ -213,9 +230,41 @@ A failed action, such as an unknown kiosk or Asterisk not connected, logs a warn
 | `sensor.kiosk_intercom_gateway_kiosks` | Ready kiosks | Every kiosk: name, extension, status, area… |
 | `sensor.kiosk_intercom_gateway_calls` | Live calls | Each: direction, state, kiosk, phone, since |
 | `binary_sensor.kiosk_intercom_phone_<extension>` | On while registered | on_kiosks, busy, found_by |
+| `binary_sensor.kiosk_intercom_gateway_problem` | On while something's wrong | problems: id, kind, message |
+| `binary_sensor.kiosk_intercom_gateway_asterisk` | On while connected to Asterisk | asterisk_version, error |
 
 These are set by the app, so they have no settings page in Home Assistant. They come back within a
 minute of Home Assistant restarting.
+
+## Problems
+
+When something stops calls working, the app tells Home Assistant: a notification (under
+Notifications) and `binary_sensor.kiosk_intercom_gateway_problem`, and a banner on the status page.
+The notification goes away by itself once it's fixed.
+
+| Problem | After |
+| --- | --- |
+| Not connected to Asterisk, with the reason (wrong password, unreachable…) | 2 minutes |
+| No intercom key set on the gateway | 1 minute |
+| A kiosk holds a different intercom key | 1 minute |
+| A kiosk that was Ready stopped answering or announcing itself | 10 minutes |
+| A phone you chose for the kiosks stopped registering (sensor and page only, no notification) | 10 minutes |
+
+The waits keep restarts and reboots from raising alarms. **Notify about problems** turns the
+notifications off; the sensor and banner stay. For a phone notification, or one on your phone,
+use the sensor in an automation:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.kiosk_intercom_gateway_problem
+    to: "on"
+actions:
+  - action: notify.mobile_app_<your phone>
+    data:
+      message: "{{ state_attr('binary_sensor.kiosk_intercom_gateway_problem', 'problems')
+                   | map(attribute='message') | join(' ') }}"
+```
 
 ## Options
 
@@ -235,6 +284,7 @@ minute of Home Assistant restarting.
 | Advertise address | The address kiosks reach the phones on. Empty finds this machine's LAN address. Set it when Home Assistant has more than one network. |
 | Call audio address | Where Asterisk connects for call audio: `127.0.0.1` when Asterisk runs on this Home Assistant, this machine's LAN address when it runs elsewhere. |
 | Announce to all number | Dial it to talk to every Ready kiosk at once. 800 by default. |
+| Notify about problems | A Home Assistant notification per problem (above), cleared once fixed. On by default. |
 | Log level | debug, info, warning or error. |
 
 ## In Home Assistant

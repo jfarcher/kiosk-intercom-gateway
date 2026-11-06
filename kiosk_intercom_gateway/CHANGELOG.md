@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+- **Prebuilt images.** Installs and updates download the app instead of building it on your Home
+  Assistant, so they take seconds rather than minutes, even on a Raspberry Pi.
+- **Set up Asterisk for me.** One button on the status page adds the ARI user and the kiosk dialplan
+  lines to the Asterisk app's files, keeps everything else in them and a copy of each as it was,
+  saves the ARI login here and reconnects. Then restart the Asterisk app. This needs a new
+  permission: access to other apps' configuration folders.
+- **Problems in Home Assistant.** A notification, cleared once it's fixed, and
+  `binary_sensor.kiosk_intercom_gateway_problem`, when Asterisk is disconnected, the gateway has no
+  key, a kiosk holds a different key, or a Ready kiosk has been unavailable for 10 minutes. Chosen
+  phones that stop registering show on the sensor. Also `binary_sensor.kiosk_intercom_gateway_asterisk`,
+  and a banner on the status page. New option: **Notify about problems**.
+
 ## 0.6.0
 
 - **Encrypted kiosks.** Kiosks with Encrypt communications on are now Ready and work both ways:

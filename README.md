@@ -22,8 +22,8 @@ Audio is two-way 16 kHz. Nothing changes on the kiosks: the gateway speaks their
    `https://github.com/jfarcher/kiosk-intercom-gateway`, then install **Kiosk Intercom Gateway**.
 2. Start it, open **Kiosk Intercom** in the sidebar, and paste the kiosks' **Intercom key**
    (any kiosk: Settings → Intercom). Your kiosks show **Ready** with their extensions.
-3. For calls, install the **Asterisk** app and follow the **Set up Asterisk** card on the status
-   page. It has the two config files ready to copy: a 6-line `ari.conf` and the dialplan.
+3. For calls, install the **Asterisk** app and start it once. On the status page, press **Set up
+   Asterisk for me**, then restart the Asterisk app. (The card also shows the files, to do it by hand.)
 4. Pick which phones the kiosks can call on the **Phones** card.
 
 Full documentation is in [DOCS.md](kiosk_intercom_gateway/DOCS.md), also shown on the app's
@@ -135,6 +135,7 @@ clean-up afterwards.
 4. Home Assistant events, actions and sensors. Done in 0.4.
 5. Announce to all from a phone. Done in 0.5.
 6. Kiosks with **Encrypt communications** on. Done in 0.6.
+7. Prebuilt images, one-click Asterisk setup, problem notifications. Done in 0.7.
 
 ## Related work
 
@@ -151,6 +152,11 @@ pytest                      # unit and end-to-end tests against a fake Asterisk 
 ruff check .
 cd kiosk_intercom_gateway/src && KIG_KEY=<key> KIG_OPTIONS=/dev/null python3 -m kig  # page on :8099
 ```
+
+Releases: bump `version` in `kiosk_intercom_gateway/config.yaml` (and `src/kig/__init__.py`) and
+merge to main. The **Publish images** workflow builds and pushes
+`ghcr.io/jfarcher/{amd64,aarch64}-kiosk-intercom-gateway:<version>`, which the Supervisor pulls. A
+version is published once and never rebuilt.
 
 ## Licence
 

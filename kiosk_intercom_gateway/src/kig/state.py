@@ -39,6 +39,9 @@ class State:
         self.phone_ports: dict[str, int] = (
             {str(k): int(v) for k, v in ports.items() if str(v).isdigit()} if isinstance(ports, dict) else {}
         )
+        notified = data.get("notified")
+        # Problems Home Assistant holds a notification for, to dismiss once fixed.
+        self.notified: list[str] = [str(n) for n in notified] if isinstance(notified, list) else []
         if not data.get("gateway_id"):
             self.save()
 
@@ -57,7 +60,7 @@ class State:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             data = {"gateway_id": self.gateway_id, "extensions": self.extensions,
-                    "addresses": self.addresses, "phone_ports": self.phone_ports}
+                    "addresses": self.addresses, "phone_ports": self.phone_ports, "notified": self.notified}
             tmp.write_text(json.dumps(data, indent=1))
             tmp.replace(self.path)
         except OSError as err:

@@ -74,7 +74,8 @@ async def test_big_registry_and_sensor_survives_a_failed_read():
 
     async def state(request):
         if request.method == "POST":
-            posted.append(await request.json())
+            if request.match_info.get("entity", "").endswith("_kiosks"):
+                posted.append(await request.json())
             return web.json_response({})
         return web.json_response({"state": "idle"})
 
