@@ -2,7 +2,7 @@ name: Publish images
 
 # Prebuilt app images, so Home Assistant pulls the app instead of building it on
 # every install and update. config.yaml's image: names them; the Supervisor pulls
-# <image>:<version>. A version is published once and never overwritten.
+# <image>:<version>. A version is published once, never overwritten.
 on:
   push:
     # release/* publishes a version before it reaches main, so it's there when
