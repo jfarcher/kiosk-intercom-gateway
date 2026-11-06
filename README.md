@@ -153,8 +153,9 @@ ruff check .
 cd kiosk_intercom_gateway/src && KIG_KEY=<key> KIG_OPTIONS=/dev/null python3 -m kig  # page on :8099
 ```
 
-Releases: bump `version` in `kiosk_intercom_gateway/config.yaml` (and `src/kig/__init__.py`) and
-merge to main. The **Publish images** workflow builds and pushes
+Releases: bump `version` in `kiosk_intercom_gateway/config.yaml` (and `src/kig/__init__.py`), push
+the branch as `release/<version>`, and merge it to main once **Publish images** has run. It builds
+and pushes
 `ghcr.io/jfarcher/{amd64,aarch64}-kiosk-intercom-gateway:<version>`, which the Supervisor pulls. A
 version is published once and never rebuilt.
 

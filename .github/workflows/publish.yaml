@@ -5,7 +5,9 @@ name: Publish images
 # <image>:<version>. A version is published once and never overwritten.
 on:
   push:
-    branches: [main]
+    # release/* publishes a version before it reaches main, so it's there when
+    # Home Assistant sees the update.
+    branches: [main, "release/**"]
     paths: ["kiosk_intercom_gateway/**", ".github/workflows/publish.yaml"]
     tags: ["v*"]
   workflow_dispatch:
