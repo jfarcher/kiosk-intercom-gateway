@@ -23,6 +23,7 @@ def make_app(
     set_phones: Callable[[list[str] | None], Awaitable[dict[str, Any]]] | None = None,
     set_up_asterisk: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     set_extension: Callable[[str, str], dict[str, Any]] | None = None,
+    forget: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
 ) -> web.Application:
     @web.middleware
     async def only_ingress(request: web.Request, handler: Any) -> web.StreamResponse:
@@ -96,6 +97,17 @@ def make_app(
         status = 200 if result.get("ok") else 409 if result.get("conflict") else 400
         return web.json_response(result, status=status)
 
+    async def forget_kiosk(request: web.Request) -> web.Response:
+        """``{"kiosk": "<id, roster key or name>"}``: Forget a kiosk that's gone."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or forget is None:
+            return web.json_response({"ok": False, "error": "Not available."}, status=400)
+        result = await forget(str(body.get("kiosk") or ""))
+        return web.json_response(result, status=200 if result.get("ok") else 409)
+
     app = web.Application(middlewares=[only_ingress])
     async def asterisk(request: web.Request) -> web.Response:
         if set_up_asterisk is None:
@@ -105,6 +117,7 @@ def make_app(
 
     app.router.add_post("/api/asterisk/setup", asterisk)
     app.router.add_post("/api/extension", extension)
+    app.router.add_post("/api/forget", forget_kiosk)
     app.router.add_post("/api/phones", phones)
     app.router.add_post("/api/key", key)
     app.router.add_get("/", page)

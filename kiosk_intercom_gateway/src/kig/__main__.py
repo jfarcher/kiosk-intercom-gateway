@@ -19,13 +19,21 @@ from .phones import PhoneDirectory
 from . import asterisk_setup
 from .ha import SELF_INFO, HomeAssistant, restart_self, save_options, supervisor_ingress_port
 from .probe import HttpProber
-from .roster import Roster
+from .roster import Roster, parse_manual
 from .state import State
 from .web import make_app
 
 _LOG = logging.getLogger("kig")
 DEFAULT_WEB_PORT = 8099  # outside the Supervisor
 
+
+
+def _endpoint(entry: str) -> tuple[str, int] | None:
+    try:
+        host, port, _ = parse_manual(entry)
+    except ValueError:
+        return None
+    return host, port
 
 async def web_port(cfg: config.Config) -> int:
     if cfg.web_port:
@@ -207,11 +215,32 @@ async def main() -> None:
             background.add(restart_task)
             return {**reply, "restart_self": True}
 
+        async def forget(target: str) -> dict:
+            """Forget, and take a kiosk added by address out of Extra kiosks too, or
+            it would be back after the next restart."""
+            result = calls.forget_kiosk(target)
+            if not (result.get("ok") and result.get("manual")):
+                return result
+            here = (result["address"], result["port"])
+            keep = [e for e in cfg.extra_kiosks if _endpoint(e) != here]
+            if len(keep) == len(cfg.extra_kiosks):
+                return result
+            dropped = [e for e in cfg.extra_kiosks if e not in keep]
+            cfg.extra_kiosks = keep
+            if not config.under_supervisor():
+                return {**result, "note": f"Remove {', '.join(dropped)} from Extra kiosks too."}
+            try:
+                await save_options({"extra_kiosks": keep}, config.raw_options())
+            except Exception as err:
+                return {**result, "note": f"Remove {', '.join(dropped)} from Extra kiosks too: {err}"}
+            return {**result, "removed_entries": dropped}
+
         background: set[asyncio.Future] = set()
         port = await web_port(cfg)
         runner = web.AppRunner(
             make_app(roster, info, cfg.ingress_only, set_key=set_key, set_phones=set_phones,
-                     set_extension=calls.set_extension, set_up_asterisk=set_up_asterisk),
+                     set_extension=calls.set_extension, set_up_asterisk=set_up_asterisk,
+                     forget=forget),
             access_log=None,
         )
         await runner.setup()

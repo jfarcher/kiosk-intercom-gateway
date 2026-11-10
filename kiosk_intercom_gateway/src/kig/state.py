@@ -85,6 +85,14 @@ class State:
                 return kid
         return None
 
+    def forget(self, kiosk_id: str) -> str | None:
+        """A kiosk is gone for good: its number is free again. The number freed."""
+        ext = self.extensions.pop(kiosk_id, None)
+        had = self.addresses.pop(kiosk_id, None)
+        if ext is not None or had is not None:
+            self.save()
+        return ext
+
     def move_extension(self, old_id: str, new_id: str) -> str | None:
         """A kiosk changed id (reinstalled): ``new_id`` takes ``old_id``'s number,
         and any number ``new_id`` was given meanwhile is free again. The

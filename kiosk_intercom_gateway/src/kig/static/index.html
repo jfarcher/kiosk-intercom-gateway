@@ -406,6 +406,37 @@ document.addEventListener("click", async (e) => {
   };
 });
 
+// Forget: a kiosk that's gone for good. Two clicks, so a stray one does nothing.
+let forgetArmed = "", forgetTimer = 0;
+const forgetMsg = {};
+const away = (t) => {
+  if (!t) return "";
+  const m = Math.max(0, (Date.now() / 1000 - t) / 60);
+  return m < 1 ? "under a minute" : m < 60 ? `${Math.round(m)} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`;
+};
+document.addEventListener("click", async (e) => {
+  const key = e.target?.dataset?.forget;
+  if (!key) return;
+  if (forgetArmed !== key) {
+    forgetArmed = key; clearTimeout(forgetTimer);
+    forgetTimer = setTimeout(() => { forgetArmed = ""; load(); }, 5000);
+    load(); return;
+  }
+  forgetArmed = ""; clearTimeout(forgetTimer);
+  try {
+    const res = await fetch("api/forget", {method: "POST", headers: {"content-type": "application/json"},
+                                         body: JSON.stringify({kiosk: key})});
+    const r = await res.json();
+    if (!r.ok) throw new Error(r.error || "HTTP " + res.status);
+    forgetMsg.last = {cls: "ok", text: `Forgot ${r.kiosk}` + (r.extension ? `; ${r.extension} is free again.` : ".") +
+      (r.removed_entries ? ` Removed ${r.removed_entries.join(", ")} from Extra kiosks.` : "") +
+      (r.note ? " " + r.note : "")};
+  } catch (err) {
+    forgetMsg[key] = {cls: "err", text: err.message};
+  }
+  load();
+});
+
 async function load() {
   try {
     const res = await fetch("api/kiosks", {cache: "no-store"});
@@ -429,7 +460,8 @@ async function load() {
     if (g.asterisk) renderPhones(g);
     renderAutomations(g, ks);
     if (numEditing) return; // keep the number being edited
-    $("list").innerHTML = ks.length ? ks.map((k) => `
+    const done = forgetMsg.last ? `<div class="meta msg ${forgetMsg.last.cls}">${esc(forgetMsg.last.text)}</div>` : "";
+    $("list").innerHTML = done + (ks.length ? ks.map((k) => `
       <div class="k" data-kiosk="${esc(k.id)}">
         <span class="name">${k.extension ? `<span class="ext">${esc(k.extension)}</span>` : ""}${esc(k.name)}` +
         `${k.id && k.extension ? `<button type="button" class="small" data-num="${esc(k.id)}">Change</button>` : ""}</span>
@@ -437,10 +469,16 @@ async function load() {
         <span class="meta">${esc(k.address)}:${k.admin_port}${k.area ? " · " + esc(k.area) : ""}` +
         `${k.version ? " · v" + esc(k.version) : ""}${k.encrypted ? " · encrypted" : ""} · ${k.source === "manual" ? "added by address" : "mDNS"}` +
         `${k.ha_intercom_state ? " · HA: " + esc(k.ha_intercom_state) : ""} · probed ${ago(k.probed_at)}</span>
+        ${k.away_since ? `<span class="meta">${k.status === "offline" ? "Offline" : "Unreachable"} for
+          ${away(k.away_since)}${k.status === "offline" && k.source !== "manual"
+            ? ". It leaves this list by itself after 7 days and keeps its number." : "."}
+          <button type="button" class="small" data-forget="${esc(k.key)}">${forgetArmed === k.key
+            ? "Click again to forget it and free its number" : "Forget"}</button></span>` : ""}
+        ${forgetMsg[k.key] ? `<span class="meta msg ${forgetMsg[k.key].cls}">${esc(forgetMsg[k.key].text)}</span>` : ""}
         ${numMsg[k.id] ? `<span class="meta msg ${numMsg[k.id].cls}">${esc(numMsg[k.id].text)}</span>` : ""}
       </div>`).join("")
       : `<div class="empty">No kiosks yet. Kiosks announce themselves when <b>Remote management</b> and
-         <b>Find other kiosks</b> are on. Kiosks on another network can be added by address in the app's configuration.</div>`;
+         <b>Find other kiosks</b> are on. Kiosks on another network can be added by address in the app's configuration.</div>`);
   } catch (e) {
     $("bar").textContent = "Could not reach the gateway: " + e;
   }

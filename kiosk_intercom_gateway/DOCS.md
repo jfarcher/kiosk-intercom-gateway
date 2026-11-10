@@ -16,6 +16,18 @@ Kiosks need **Remote management** and **Find other kiosks** on, as for the inter
 itself. They should read **Ready** within a few seconds. A kiosk on another VLAN can be
 added under **Extra kiosks** as `host` or `host:port` (remote admin port, 2324 by default).
 
+### Kiosks that are gone
+
+A kiosk that's been reflashed, replaced or retired shows **Offline** (it stopped announcing itself)
+or **Unreachable** (it's listed but doesn't answer). Its row says for how long and has **Forget**:
+click it twice to take the kiosk off the list and free its extension for the next kiosk. A kiosk
+added under **Extra kiosks** is removed from there too. If a forgotten kiosk turns up again, it's
+found afresh and gets a new number.
+
+An Offline kiosk also leaves the list by itself after 7 days, keeping its number, so it gets the
+same one back if it returns; only Forget frees the number. Kiosks under Extra kiosks stay until
+you forget them. A reinstalled kiosk at the same address needs neither: it keeps its number.
+
 ## 2. Connect to Asterisk
 
 This works with the **Asterisk** app for Home Assistant (TECH7Fox).

@@ -15,8 +15,8 @@ Each kiosk is probed on its admin port at ``/api/intercom/identity``.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
+import logging
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -53,6 +53,7 @@ class Kiosk:
     host: str = ""
     manual: bool = False
     heard: bool = False  # currently announced over mDNS
+    away_since: float | None = None  # when it went Offline or Unreachable (Roster.tidy)
     # From the identity probe.
     enabled: bool | None = None
     fingerprint: str | None = None
@@ -107,6 +108,8 @@ class Kiosk:
         status = self.status(our_fingerprint)
         return {
             "id": self.id,
+            "key": self.key,
+            "away_since": self.away_since if status in AWAY else None,
             "name": self.name or self.address,
             "address": self.address,
             "admin_port": self.port,
@@ -145,6 +148,10 @@ def parse_manual(entry: str) -> tuple[str, int, bool]:
         host, port_s = text.split(":")
         return host, int(port_s), tls
     return text, DEFAULT_ADMIN_PORT, tls
+
+
+AWAY = ("offline", "unreachable")  # what Forget is offered for
+TIDY_AFTER = 7 * 24 * 3600.0  # an Offline kiosk leaves the list after a week
 
 
 class Roster:
@@ -344,10 +351,40 @@ class Roster:
         async with self._lock:
             await asyncio.gather(*(self.probe(k) for k in self.due()))
 
+    def forget(self, key: str) -> Kiosk | None:
+        """Takes a kiosk off the list (Forget, or tidy)."""
+        k = self.kiosks.pop(key, None)
+        if k is not None:
+            self._changed()
+        return k
+
+    def tidy(self, now: float | None = None, after: float = TIDY_AFTER) -> list[Kiosk]:
+        """Notes when each kiosk went away, and drops the ones Offline for
+        ``after``. Kiosks added by address are configuration, so they stay;
+        so does an Unreachable one still announcing (it would come right back)."""
+        now = time.time() if now is None else now
+        gone: list[Kiosk] = []
+        for k in list(self.kiosks.values()):
+            status = k.status(self.key_fingerprint)
+            if status not in AWAY:
+                k.away_since = None
+                continue
+            if k.away_since is None:
+                k.away_since = now
+            if status == "offline" and not k.manual and now - k.away_since >= after:
+                del self.kiosks[k.key]
+                gone.append(k)
+        if gone:
+            _LOG.info("tidied away %s: offline for %d days", ", ".join(k.name or k.key for k in gone),
+                      after // 86400)
+            self._changed()
+        return gone
+
     async def run(self, stop: asyncio.Event) -> None:
         """Probe whatever is due every couple of seconds until ``stop``."""
         while not stop.is_set():
             try:
+                self.tidy()
                 await self.probe_due()
             except Exception:
                 _LOG.exception("probe round failed")

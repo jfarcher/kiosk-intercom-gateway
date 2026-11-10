@@ -43,7 +43,7 @@ from aiohttp import web
 from . import __version__
 from .ari import Ari, AriError
 from .protocol import TokenVerifier, issue_token
-from .roster import Kiosk, Roster
+from .roster import AWAY, STATUS_TEXT, Kiosk, Roster
 from .media import AudioSocketServer, MediaLeg, rms
 from .state import State
 from .tls import Certificate, client_context
@@ -262,6 +262,26 @@ class CallManager:
                 k.extra["extension"] = ext
         else:
             _LOG.info("kiosk %s changed id %s → %s (reinstalled)", name, old_id, new_id)
+
+    def forget_kiosk(self, target: str) -> dict[str, Any]:
+        """Forget (the page): a kiosk that's gone for good leaves the list and its
+        number is free again. Only for Offline or Unreachable kiosks: one that's
+        here would come straight back."""
+        k = self.roster.kiosks.get(target.strip()) or self.roster.find(target)
+        if k is None:
+            return {"ok": False, "error": f"No kiosk {target!r}."}
+        name = k.name or k.address
+        status = k.status(self.roster.key_fingerprint)
+        if status not in AWAY:
+            return {"ok": False, "error": f"{name} is here ({STATUS_TEXT[status]}), so it would come "
+                    "straight back. Forget is for kiosks that are Offline or Unreachable."}
+        if any(c.kiosk is k for c in self.calls.values()):
+            return {"ok": False, "error": f"{name} is in a call."}
+        self.roster.forget(k.key)
+        ext = self.state.forget(k.id) if k.id else None
+        _LOG.info("forgot kiosk %s (%s)%s", name, status, f", extension {ext} free again" if ext else "")
+        return {"ok": True, "kiosk": name, "extension": ext, "manual": k.manual,
+                "address": k.address, "port": k.port}
 
     def set_extension(self, target: str, extension: str) -> dict[str, Any]:
         """Gives a kiosk a number by hand (the page's recovery control). Refused

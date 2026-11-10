@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+- **Forget** on Offline and Unreachable kiosks: click twice to take a kiosk that's gone for good
+  (reflashed, replaced) off the list and free its extension. A kiosk added under Extra kiosks is
+  removed from there too. Its problem notification goes with it.
+- Offline kiosks leave the list by themselves after 7 days, keeping their numbers in case they come
+  back. Each row shows how long a kiosk has been away.
+
 ## 0.7.0
 
 - **Prebuilt images.** Installs and updates download the app instead of building it on your Home
