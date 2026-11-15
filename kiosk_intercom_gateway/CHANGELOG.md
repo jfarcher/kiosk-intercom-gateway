@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- **Works with the Asterisk app's web UI** ([jfarcher/asterisk-hass-addons](https://github.com/jfarcher/asterisk-hass-addons)
+  6.6 and later). Press **Connect** beside Kiosk Intercom Gateway on its **Apps** tab, then **Set up
+  Asterisk for me** here. The gateway takes the login, app name and kiosk numbers that Asterisk offers,
+  and doesn't edit any Asterisk files. Asterisk doesn't need restarting.
+- **Set up Asterisk for me** now prefers an Asterisk app offering a login, when several are installed.
+  It no longer writes `extensions.conf` for such an app, which would have replaced its dial plan,
+  including outside lines.
+
 ## 0.7.1
 
 - **Forget** on Offline and Unreachable kiosks: click twice to take a kiosk that's gone for good

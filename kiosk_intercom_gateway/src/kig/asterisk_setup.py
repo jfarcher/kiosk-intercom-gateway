@@ -1,5 +1,13 @@
 """Sets the Asterisk app up for kiosk calls: the page's copy-and-paste steps, done.
 
+Asterisk apps with a web UI (jfarcher/asterisk-hass-addons 6.6+) manage ARI and
+the kiosk numbers themselves: their Apps tab writes
+``asterisk/integrations/kiosk-intercom-gateway.json`` with the login to use.
+When that file is there, nothing is written; the gateway just takes the login
+from it. Editing ``extensions.conf`` there would replace that app's dial plan.
+
+Otherwise (TECH7Fox's Asterisk app):
+
 Writes the gateway's ARI user into ``custom/ari.conf`` and the kiosk lines into
 ``custom/extensions.conf`` of the Asterisk app (TECH7Fox), in its folder under
 /addon_configs (the ``all_addon_configs`` map). Only what the gateway needs is
@@ -10,6 +18,7 @@ changes nothing. Asterisk reads the files when it restarts.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -21,6 +30,7 @@ _LOG = logging.getLogger(__name__)
 
 ROOT = Path("/addon_configs")
 ASTERISK_SLUG = "b35499aa_asterisk"  # TECH7Fox's repository
+HANDOFF = Path("integrations") / "kiosk-intercom-gateway.json"
 BACKUP_SUFFIX = ".before-kiosk-gateway"
 _SECTION = re.compile(r"^\s*\[([^\]]+)\]")
 
@@ -32,10 +42,59 @@ def find(root: Path = ROOT) -> Path | None:
         candidates += sorted(p / "asterisk" for p in root.iterdir() if p.name.endswith("_asterisk"))
     except OSError:
         return None
+    # An Asterisk app that offers this gateway a login wins: it's the one set up for it.
+    for c in candidates:
+        if (c / HANDOFF).is_file():
+            return c
     for c in candidates:
         if c.is_dir():
             return c
     return None
+
+
+class ManagedError(Exception):
+    """The Asterisk app manages this itself and said no; the message says what to do."""
+
+
+@dataclass
+class Handoff:
+    """The login an Asterisk app with a web UI offers this gateway."""
+
+    username: str
+    password: str
+    app: str
+    ari_url: str
+    ari_enabled: bool
+    first: int | None  # first number routed to the gateway, such as 800
+
+    @property
+    def extension_start(self) -> int | None:
+        """Kiosk numbering inside the routed range: 801 for 800-899 (800 announces)."""
+        return None if self.first is None else self.first + 1
+
+
+_NAME = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def handoff(folder: Path | None) -> Handoff | None:
+    """The Asterisk app's offer, if it made one (and it reads as one)."""
+    if folder is None:
+        return None
+    try:
+        raw = json.loads((folder / HANDOFF).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        return None
+    username, password, app = (str(raw.get(k) or "") for k in ("username", "password", "app"))
+    url = str(raw.get("ari_url") or "")
+    if not (_NAME.match(username) and _NAME.match(app) and password
+            and url.startswith(("http://", "https://"))):
+        return None
+    numbers = raw.get("numbers") if isinstance(raw.get("numbers"), dict) else {}
+    first = str(numbers.get("first") or "")
+    return Handoff(username, password, app, url, bool(raw.get("ari_enabled")),
+                   int(first) if first.isdigit() else None)
 
 
 def pattern(start: int) -> str:
@@ -147,10 +206,12 @@ class Result:
     changed: list[str] = field(default_factory=list)  # files written
     unchanged: list[str] = field(default_factory=list)
     backups: list[str] = field(default_factory=list)
+    managed: Handoff | None = None  # the Asterisk app manages ARI and the dial plan
 
     def to_json(self) -> dict[str, object]:
         return {"folder": self.folder, "changed": self.changed, "unchanged": self.unchanged,
-                "backups": self.backups}
+                "backups": self.backups, "managed": self.managed is not None,
+                "restart_asterisk": self.managed is None and bool(self.changed)}
 
 
 def _write(path: Path, text: str, result: Result) -> None:
@@ -169,10 +230,15 @@ def _write(path: Path, text: str, result: Result) -> None:
     result.changed.append(path.name)
 
 
-def status(folder: Path | None, user: str, app: str) -> dict[str, object]:
+def status(folder: Path | None, user: str, app: str, password: str = "") -> dict[str, object]:
     """For the page: can the button be offered, and is it done already."""
     if folder is None:
         return {"available": False}
+    offer = handoff(folder)
+    if offer is not None:
+        return {"available": True, "folder": str(folder), "slug": folder.parent.name,
+                "managed": True, "ari_enabled": offer.ari_enabled,
+                "done": (offer.username, offer.password, offer.app) == (user, password, app)}
     custom = folder / "custom"
     try:
         ari = (custom / "ari.conf").read_text() if (custom / "ari.conf").exists() else ""
@@ -185,7 +251,17 @@ def status(folder: Path | None, user: str, app: str) -> dict[str, object]:
 
 def apply(folder: Path, user: str, app: str, start: int, password: str = "") -> Result:
     """Writes both files. Keeps a password ari.conf already has for ``user``
-    unless one is given; makes one up if neither."""
+    unless one is given; makes one up if neither.
+
+    With an Asterisk app that offers a login (see ``handoff``), writes nothing
+    and returns that login instead."""
+    offer = handoff(folder)
+    if offer is not None:
+        if not offer.ari_enabled:
+            raise ManagedError("ARI is turned off in the Asterisk app. Turn on "
+                               "“Allow apps to control calls” on its Apps tab, then try again.")
+        _LOG.info("Asterisk in %s offers login %s; no files written", folder, offer.username)
+        return Result(str(folder), offer.password, managed=offer)
     custom = folder / "custom"
     custom.mkdir(parents=True, exist_ok=True)
     ari_path, ext_path = custom / "ari.conf", custom / "extensions.conf"

@@ -85,3 +85,52 @@ def test_dialplan_variants():
     assert no_default.endswith("\n\n[default]\n" + a.kiosk_lines("_8XX", APP))
     assert a.extensions_conf("same => n,Stasis(kiosk-intercom,${EXTEN})", "_8XX", APP) is None
     assert a.pattern(801) == "_8XX" and a.pattern(5001) == "_5XXX"
+
+
+# Asterisk apps with a web UI offer a login instead of having their files edited.
+
+def offer(f, **extra):
+    data = {"version": 1, "managed_by": "asterisk-addon-web-ui", "ari_enabled": True,
+            "ari_url": "http://127.0.0.1:8088", "username": "kiosk-gateway", "password": "offered-pw",
+            "app": "kiosk-intercom", "numbers": {"pattern": "_8XX", "first": "800", "last": "899"},
+            "dialplan_managed": True, **extra}
+    (f / "integrations").mkdir(exist_ok=True)
+    (f / "integrations" / "kiosk-intercom-gateway.json").write_text(__import__("json").dumps(data))
+
+
+def test_find_prefers_the_asterisk_app_offering_a_login(tmp_path):
+    folder(tmp_path)  # TECH7Fox's, no offer
+    managed = tmp_path / "aaf52c24_asterisk" / "asterisk"
+    (managed / "custom").mkdir(parents=True)
+    offer(managed)
+    assert a.find(tmp_path) == managed
+
+
+def test_managed_asterisk_is_not_edited(tmp_path):
+    f = folder(tmp_path)
+    offer(f)
+    st = a.status(f, "kiosk-gateway", APP)
+    assert st["managed"] and st["ari_enabled"] and not st["done"]
+    r = a.apply(f, "kiosk-gateway", APP, 801)
+    assert r.password == "offered-pw" and r.changed == [] and r.managed.extension_start == 801
+    assert r.to_json()["managed"] and not r.to_json()["restart_asterisk"]
+    assert list((f / "custom").iterdir()) == []  # neither ari.conf nor extensions.conf
+    assert a.status(f, "kiosk-gateway", APP, "offered-pw")["done"]
+
+
+def test_managed_asterisk_with_ari_off(tmp_path):
+    f = folder(tmp_path)
+    offer(f, ari_enabled=False)
+    try:
+        a.apply(f, "kiosk-gateway", APP, 801)
+    except a.ManagedError as err:
+        assert "Apps tab" in str(err)
+    else:
+        raise AssertionError("expected ManagedError")
+
+
+def test_bad_offer_is_ignored(tmp_path):
+    f = folder(tmp_path)
+    offer(f, username="bad name\n[x]")
+    assert a.handoff(f) is None
+    assert a.apply(f, "kiosk-gateway", APP, 801).managed is None  # falls back to editing files

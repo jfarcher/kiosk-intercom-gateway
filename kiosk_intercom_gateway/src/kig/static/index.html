@@ -191,6 +191,15 @@ function setupBlock(a, st) {
   const open = st.slug ? `<a href="/hassio/addon/${esc(st.slug)}/info" target="_top">Open the Asterisk app</a>` : "";
   if (setupMsg) return `<div class="setup"><p class="msg ${setupMsg.cls}">${setupMsg.html}</p></div>`;
   if (st.done && a.connected) return "";
+  if (st.managed) {
+    if (!st.ari_enabled) return `<div class="setup"><p>The Asterisk app has a login ready for this gateway, but
+      ARI is turned off. In the Asterisk app's web UI, open <b>Apps</b> and turn on
+      <b>Allow apps to control calls</b>. ${open}</p></div>`;
+    if (st.done) return `<div class="setup"><p>Using the login from the Asterisk app. Connecting…</p></div>`;
+    return `<div class="setup"><p>The Asterisk app has a login ready for this gateway, and already sends the
+      kiosk numbers here. Use it: no Asterisk files are changed and Asterisk doesn't need restarting.</p>
+      <button type="button" class="primary" id="setupgo" ${setupBusy ? "disabled" : ""}>Set up Asterisk for me</button></div>`;
+  }
   if (st.done) return `<div class="setup"><p>Asterisk is set up for kiosk calls. If it hasn't been restarted
     since, restart the Asterisk app so it reads the new settings. ${open}</p></div>`;
   return `<div class="setup"><p>This app can set Asterisk up for you: it adds its ARI user to
@@ -207,12 +216,15 @@ async function runSetup() {
       ? ` <a href="/hassio/addon/${esc(r.asterisk_slug)}/info" target="_top">Open the Asterisk app</a> and restart it.`
       : " Restart the Asterisk app.";
     if (!r.ok) setupMsg = {cls: "err", html: esc(r.error || "Setup failed.")};
-    else {
+    else if (r.managed) {
+      setupMsg = {cls: "ok", html: "Using the login from the Asterisk app." + (r.restart_self
+        ? " This app restarts now to connect; give it a few seconds." : "") + (r.note ? " " + esc(r.note) : "")};
+    } else {
       const wrote = r.changed.length ? `Wrote ${r.changed.map(esc).join(" and ")}` : "Nothing needed changing";
       const kept = r.backups.length ? ` (the old ones are kept as ${r.backups.map(esc).join(", ")})` : "";
       setupMsg = {cls: "ok", html: `${wrote}${kept}.` + (r.restart_self
         ? " This app restarts now to connect; give it a few seconds." : "") +
-        (r.note ? " " + esc(r.note) : "") + (r.changed.length ? open : "")};
+        (r.note ? " " + esc(r.note) : "") + (r.restart_asterisk ? open : "")};
     }
   } catch (err) {
     setupMsg = {cls: "err", html: "Setup failed: " + esc(String(err))};
@@ -250,6 +262,9 @@ function renderAsterisk(a, st) {
     <details id="setup" ${setupOpen ? "open" : ""}><summary>${st && st.available
       ? "Or set it up by hand" : "Set up Asterisk for kiosk calls"}</summary>
     <ol class="steps">
+      <li>Using the Asterisk app with a web UI (jfarcher/asterisk-hass-addons)? Skip these steps: in its web UI,
+          open <b>Apps</b>, press <b>Connect</b> beside Kiosk Intercom Gateway, then use the button above.
+          Editing its <code>extensions.conf</code> as below would replace its dial plan.</li>
       <li>Install the <b>Asterisk</b> app (TECH7Fox) and start it once, so it creates its config folders.</li>
       <li>Create <code>${dir}/custom/ari.conf</code> (with the File editor or Samba app):${snip("ari", ari)}</li>
       <li>Create <code>${dir}/custom/extensions.conf</code> with this: the Asterisk app's default dialplan with

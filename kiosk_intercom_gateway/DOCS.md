@@ -30,7 +30,19 @@ you forget them. A reinstalled kiosk at the same address needs neither: it keeps
 
 ## 2. Connect to Asterisk
 
-This works with the **Asterisk** app for Home Assistant (TECH7Fox).
+### With the Asterisk app's web UI (jfarcher, 6.6 and later)
+
+1. In the Asterisk app's web UI, open **Apps** and press **Connect** beside Kiosk Intercom Gateway.
+   That adds the gateway's ARI login, turns ARI on and sends 800-899 to the kiosks.
+2. On this app's status page, press **Set up Asterisk for me**. It reads the login the Asterisk app
+   offers (from its `asterisk/integrations/kiosk-intercom-gateway.json`), saves it in this app's
+   Configuration and restarts this app. No Asterisk files are edited, and Asterisk doesn't need a restart.
+
+Don't follow the steps below with that Asterisk app: writing its `custom/extensions.conf` replaces its
+dial plan, including its outside lines. If an older version of this app already did, delete that
+`custom/extensions.conf` (and `custom/ari.conf`) and restart the Asterisk app; its web UI warns about it.
+
+### With TECH7Fox's Asterisk app
 
 The quick way: install the Asterisk app and start it once, then press **Set up Asterisk for me** on
 this app's status page and restart the Asterisk app when it says so. The button:

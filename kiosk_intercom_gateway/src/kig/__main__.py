@@ -52,6 +52,15 @@ async def web_port(cfg: config.Config) -> int:
     return port
 
 
+def _in_range(start: int, first: int | None) -> bool:
+    """Whether kiosk numbering from ``start`` sits in the range beginning at ``first``
+    (800 → 800-899): same length, same leading digit."""
+    if first is None:
+        return True
+    a, b = str(start), str(first)
+    return len(a) == len(b) and a[0] == b[0] and start > first
+
+
 async def main() -> None:
     cfg = config.load()
     logging.basicConfig(
@@ -135,7 +144,8 @@ async def main() -> None:
             problems = ha.health.check(roster.snapshot(), status, status.get("phones"))
             return {
                 "problems": [p.to_json() for p in problems],
-                "asterisk_setup": asterisk_setup.status(asterisk_setup.find(), ari_user, cfg.ari_app),
+                "asterisk_setup": asterisk_setup.status(asterisk_setup.find(), ari_user, cfg.ari_app,
+                                                        cfg.ari_password),
                 "version": __version__,
                 "key_fingerprint": roster.key_fingerprint,
                 "discovery": cfg.mdns,
@@ -189,18 +199,30 @@ async def main() -> None:
             try:
                 result = await asyncio.to_thread(
                     asterisk_setup.apply, folder, ari_user, cfg.ari_app, cfg.extension_start, keep)
+            except asterisk_setup.ManagedError as err:
+                return {"ok": False, "error": str(err), "asterisk_slug": folder.parent.name}
             except OSError as err:
                 return {"ok": False, "error": f"Couldn't write the Asterisk files: {err}"}
             reply = {"ok": True, **result.to_json(), "asterisk_slug": folder.parent.name}
-            fresh = (cfg.ari_username, cfg.ari_password) != (ari_user, result.password)
-            if not fresh:
+            wanted = {"ari_username": ari_user, "ari_password": result.password}
+            if result.managed is not None:
+                # The Asterisk app chose the login, the app name and which numbers ring kiosks.
+                offer = result.managed
+                wanted = {"ari_username": offer.username, "ari_password": offer.password,
+                          "ari_app": offer.app, "ari_url": offer.ari_url}
+                if offer.extension_start and not _in_range(cfg.extension_start, offer.first):
+                    wanted["extension_start"] = offer.extension_start
+            current = {"ari_username": cfg.ari_username, "ari_password": cfg.ari_password,
+                       "ari_app": cfg.ari_app, "ari_url": cfg.ari_url,
+                       "extension_start": cfg.extension_start}
+            if all(current[k] == v for k, v in wanted.items()):
                 return {**reply, "restart_self": False}
             if not config.under_supervisor():
                 return {**reply, "restart_self": False,
-                        "note": f"Set ARI username {ari_user} and password {result.password}, then restart."}
+                        "note": "Set " + ", ".join(f"{k} = {v}" for k, v in wanted.items())
+                                + " in the configuration, then restart."}
             try:
-                await save_options({"ari_username": ari_user, "ari_password": result.password},
-                                   config.raw_options())
+                await save_options(wanted, config.raw_options())
             except Exception as err:
                 return {**reply, "ok": False, "error": f"Files written, but the ARI user wasn't saved: {err}"}
 
